@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.pytest_tmp/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated examples and run artifacts
+examples/generated/
+out/
+
+# Local environment
+.env
+.env.*
+!.env.example
