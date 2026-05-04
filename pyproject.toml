@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "industrial-tsad-eval"
+version = "0.1.0"
+description = "Productized evaluation toolkit for industrial time-series anomaly detection."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Joar Eliasson"}]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pyarrow>=14.0",
+  "pydantic>=2.8",
+  "rich>=13.0",
+  "scikit-learn>=1.2",
+  "typer>=0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10",
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+itse = "industrial_tsad_eval.interfaces.cli.main:app"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/industrial_tsad_eval/interfaces/cli/main.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = false
+ignore_missing_imports = true
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+cache_dir = ".pytest_cache"
