@@ -22,3 +22,6 @@ out/
 .env
 .env.*
 !.env.example
+
+# IDE
+.idea
