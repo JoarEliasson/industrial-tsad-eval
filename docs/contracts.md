@@ -56,6 +56,24 @@ filenames are decoded by replacing `__` with `/`.
 
 `model_meta.json` records detector configuration and run provenance.
 
+## Evidence Bundle v1
+
+Evidence artifacts explain one oracle or operational event. An evidence root
+contains:
+
+```text
+manifest.json
+index.jsonl
+bundles/<safe_run_id>/<safe_event_id>/evidence.json
+```
+
+Each bundle includes event identity, `event_source`, event bounds, optional
+matched GT event id, ranked `top_variables`, ranked `top_time_windows`, score
+context, local rankings, and provenance.
+
+Ground-truth tag maps use `gt-tag-map-v1` with `dataset`, `key_mode`, and an
+`entries` object mapping event ids to tag lists.
+
 ## Dataset Adapter Contract
 
 Dataset adapters are plugins that convert local raw data into Prepared Format

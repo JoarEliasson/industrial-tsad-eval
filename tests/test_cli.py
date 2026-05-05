@@ -203,3 +203,92 @@ def test_cli_system_and_profile_commands(tmp_path: Path):
     )
     assert profile.exit_code == 0, profile.output
     assert (tmp_path / "profiles" / "cli-profile" / "summary.json").exists()
+
+
+def test_cli_evidence_and_xai_commands(tmp_path: Path):
+    examples = tmp_path / "examples"
+    scores = tmp_path / "scores"
+    eval_out = tmp_path / "eval"
+    evidence = tmp_path / "evidence"
+    gt_map = tmp_path / "gt_map.json"
+    xai_out = tmp_path / "xai"
+    runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])
+    prepared = examples / "OPCUA_SYNTH"
+
+    score = runner.invoke(
+        app,
+        [
+            "score",
+            "run",
+            "--prepared",
+            str(prepared),
+            "--detector",
+            "forecast-ridge",
+            "--out",
+            str(scores),
+            "--parameters-json",
+            '{"window": 24, "stride": 4, "lags": 1}',
+        ],
+    )
+    assert score.exit_code == 0, score.output
+    eval_result = runner.invoke(
+        app,
+        [
+            "eval",
+            "run",
+            "--prepared",
+            str(prepared),
+            "--scores",
+            str(scores),
+            "--out",
+            str(eval_out),
+        ],
+    )
+    assert eval_result.exit_code == 0, eval_result.output
+
+    generated = runner.invoke(
+        app,
+        [
+            "evidence",
+            "generate",
+            "--prepared",
+            str(prepared),
+            "--scores",
+            str(scores),
+            "--out",
+            str(evidence),
+        ],
+    )
+    assert generated.exit_code == 0, generated.output
+    assert (
+        runner.invoke(
+            app, ["evidence", "validate", "--prepared", str(prepared), "--evidence", str(evidence)]
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app, ["xai", "gt-map", "build", "--prepared", str(prepared), "--out", str(gt_map)]
+        ).exit_code
+        == 0
+    )
+    assert runner.invoke(app, ["xai", "gt-map", "validate", "--gt-map", str(gt_map)]).exit_code == 0
+    xai = runner.invoke(
+        app,
+        [
+            "xai",
+            "eval",
+            "--prepared",
+            str(prepared),
+            "--evidence",
+            str(evidence),
+            "--gt-map",
+            str(gt_map),
+            "--out",
+            str(xai_out),
+            "--ks",
+            "1,3,5",
+        ],
+    )
+    assert xai.exit_code == 0, xai.output
+    assert (xai_out / "metrics.json").exists()

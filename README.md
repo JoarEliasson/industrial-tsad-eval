@@ -63,6 +63,15 @@ itse system preflight --prepared examples/generated/OPCUA_SYNTH --detector forec
 itse profile run --prepared examples/generated/OPCUA_SYNTH --detector forecast-ridge --out out/profiles --profile-id smoke
 ```
 
+Evidence and XAI evaluation add explanation-quality artifacts:
+
+```powershell
+itse evidence generate --prepared examples/generated/OPCUA_SYNTH --scores out/scores --out out/evidence
+itse evidence validate --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence
+itse xai gt-map build --prepared examples/generated/OPCUA_SYNTH --out out/gt_map.json
+itse xai eval --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --gt-map out/gt_map.json --out out/xai --ks 1,3,5
+```
+
 ## Architecture
 
 The package uses a hexagonal structure:
@@ -114,8 +123,9 @@ Benchmark runs create:
 ```
 
 See [docs/contracts.md](docs/contracts.md), [docs/plugins.md](docs/plugins.md),
-[docs/benchmarks.md](docs/benchmarks.md), [docs/system.md](docs/system.md), and
-[docs/profiling.md](docs/profiling.md) for details.
+[docs/benchmarks.md](docs/benchmarks.md), [docs/system.md](docs/system.md),
+[docs/profiling.md](docs/profiling.md), [docs/evidence.md](docs/evidence.md),
+and [docs/xai.md](docs/xai.md) for details.
 
 ## Development
 

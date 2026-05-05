@@ -55,3 +55,13 @@ System diagnostics are read-only probes that produce structured JSON reports.
 Profiling wraps existing application services and writes measured artifacts
 beside the normal score/evaluation outputs. It does not add a second scoring or
 evaluation path.
+
+## Evidence And XAI Slice
+
+Evidence generation consumes prepared data, score artifacts, and optional
+evaluation matches. It writes Evidence Bundle v1 through a repository adapter.
+XAI evaluation then consumes those bundles plus a GT tag map to compute
+HitRate@K, Recall@K, masking proxy drops, and local stability.
+
+Detector-native explainers are intentionally outside this slice. The current
+implementation is deterministic and detector-agnostic.

@@ -41,3 +41,11 @@ class PreflightError(IndustrialTSADError):
 
 class ProfileRunError(IndustrialTSADError):
     """Raised when a profiling run cannot be created or completed."""
+
+
+class EvidenceError(IndustrialTSADError):
+    """Raised when evidence artifacts cannot be generated or read."""
+
+
+class XAIEvaluationError(IndustrialTSADError):
+    """Raised when explanation-quality evaluation cannot complete."""

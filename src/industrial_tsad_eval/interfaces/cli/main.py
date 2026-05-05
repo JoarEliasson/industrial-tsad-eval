@@ -12,6 +12,12 @@ from rich.table import Table
 
 from industrial_tsad_eval.application.benchmark import RunBenchmark
 from industrial_tsad_eval.application.evaluation import EvaluateScores
+from industrial_tsad_eval.application.evidence import (
+    BuildGroundTruthTagMap,
+    GenerateEvidence,
+    ValidateEvidence,
+    ValidateGroundTruthTagMap,
+)
 from industrial_tsad_eval.application.preflight import PreflightInput, RunPreflight
 from industrial_tsad_eval.application.preparation import PrepareDataset
 from industrial_tsad_eval.application.profiling import (
@@ -20,6 +26,7 @@ from industrial_tsad_eval.application.profiling import (
 )
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
+from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
 from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
 from industrial_tsad_eval.domain.errors import IndustrialTSADError
 from industrial_tsad_eval.domain.policy import EvalPolicy
@@ -51,6 +58,9 @@ examples_app = typer.Typer(help="Synthetic example fixture workflows.")
 bench_app = typer.Typer(help="Benchmark orchestration workflows.")
 system_app = typer.Typer(help="System and accelerator diagnostics.")
 profile_app = typer.Typer(help="Runtime profiling workflows.")
+evidence_app = typer.Typer(help="Evidence Bundle workflows.")
+xai_app = typer.Typer(help="Explanation-quality evaluation workflows.")
+xai_gt_map_app = typer.Typer(help="Ground-truth tag-map workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
@@ -60,6 +70,9 @@ app.add_typer(examples_app, name="examples")
 app.add_typer(bench_app, name="bench")
 app.add_typer(system_app, name="system")
 app.add_typer(profile_app, name="profile")
+app.add_typer(evidence_app, name="evidence")
+app.add_typer(xai_app, name="xai")
+xai_app.add_typer(xai_gt_map_app, name="gt-map")
 
 
 @prepared_app.command("validate")
@@ -449,6 +462,102 @@ def profile_run(
     console.print_json(data=result.to_dict())
 
 
+@evidence_app.command("generate")
+def evidence_generate(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    scores: Path = typer.Option(..., "--scores", file_okay=False, help="Score artifact root."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Evidence output root."),
+    eval_dir: Path | None = typer.Option(
+        None, "--eval", file_okay=False, help="Evaluation artifact root."
+    ),
+    event_source: str = typer.Option(
+        "oracle", "--event-source", help="Event source: oracle or operational."
+    ),
+    protocol: str = typer.Option("naive", "--protocol", help="Split protocol."),
+    top_k: int = typer.Option(5, "--top-k", min=1, help="Number of top variables."),
+    max_events: int = typer.Option(100, "--max-events", min=1, help="Maximum events."),
+) -> None:
+    """Generate detector-agnostic Evidence Bundle v1 artifacts."""
+    try:
+        result = GenerateEvidence(
+            prepared=prepared,
+            scores=scores,
+            out=out,
+            eval_dir=eval_dir,
+            event_source=event_source,
+            protocol=protocol,
+            top_k=top_k,
+            max_events=max_events,
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
+@evidence_app.command("validate")
+def evidence_validate(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence root."),
+) -> None:
+    """Validate Evidence Bundle v1 artifacts."""
+    _emit_validation(ValidateEvidence(prepared, evidence).run().to_dict())
+
+
+@xai_gt_map_app.command("build")
+def xai_gt_map_build(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    out: Path = typer.Option(..., "--out", dir_okay=False, help="GT tag-map JSON file."),
+) -> None:
+    """Build a ground-truth tag map from prepared event metadata."""
+    try:
+        result = BuildGroundTruthTagMap(prepared=prepared, out=out).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
+@xai_gt_map_app.command("validate")
+def xai_gt_map_validate(
+    gt_map: Path = typer.Option(..., "--gt-map", dir_okay=False, help="GT tag-map JSON file."),
+) -> None:
+    """Validate a ground-truth tag map."""
+    _emit_validation(ValidateGroundTruthTagMap(gt_map).run().to_dict())
+
+
+@xai_app.command("eval")
+def xai_eval(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence root."),
+    gt_map: Path = typer.Option(..., "--gt-map", dir_okay=False, help="GT tag-map JSON file."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="XAI evaluation output root."),
+    ks: str = typer.Option("1,3,5", "--ks", help="Comma-separated K values."),
+    protocol: str = typer.Option("naive", "--protocol", help="Split protocol."),
+) -> None:
+    """Evaluate evidence bundles with deterministic XAI metrics."""
+    try:
+        result = EvaluateEvidence(
+            EvaluateEvidenceConfig(
+                prepared=prepared,
+                evidence=evidence,
+                gt_map=gt_map,
+                out=out,
+                ks=_parse_ks(ks),
+                protocol=protocol,
+            )
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
 def _emit_validation(report: dict[str, Any]) -> None:
     console.print_json(data=report)
     if not bool(report.get("ok")):
@@ -462,6 +571,15 @@ def _json_object(value: str | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("JSON value must be an object.")
     return payload
+
+
+def _parse_ks(value: str) -> list[int]:
+    ks = [int(item.strip()) for item in value.split(",") if item.strip()]
+    if not ks:
+        raise ValueError("--ks must include at least one integer.")
+    if any(k <= 0 for k in ks):
+        raise ValueError("--ks values must be positive.")
+    return ks
 
 
 def _fail(message: str) -> NoReturn:

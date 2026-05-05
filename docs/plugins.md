@@ -12,6 +12,9 @@ A detector plugin provides:
 
 The detector reads data through a `PreparedDatasetRepository` port and returns
 Score Contract v1 rows as a dataframe. It does not write files directly.
+Detector-native evidence explainers are not part of the detector plugin contract
+yet; Phase 6 evidence generation uses a detector-agnostic robust-deviation
+generator.
 
 Built-in detectors:
 
