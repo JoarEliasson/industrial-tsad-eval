@@ -13,6 +13,7 @@ def test_detector_registry_looks_up_forecast_ridge_and_rejects_unknown():
     registry = default_detector_registry()
 
     assert registry.get("forecast-ridge").name == "forecast-ridge"
+    assert registry.names() == ["dra", "drcad", "forecast-lstm", "forecast-ridge", "interfusion"]
     with pytest.raises(PluginNotFoundError):
         registry.get("missing")
 

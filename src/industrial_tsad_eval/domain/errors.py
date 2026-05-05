@@ -29,3 +29,15 @@ class BenchmarkRunError(IndustrialTSADError):
 
 class RepositoryError(IndustrialTSADError):
     """Raised when repository-backed artifacts cannot be read or written."""
+
+
+class OptionalDependencyError(IndustrialTSADError):
+    """Raised when an optional dependency is required but unavailable."""
+
+
+class PreflightError(IndustrialTSADError):
+    """Raised when a strict preflight check fails."""
+
+
+class ProfileRunError(IndustrialTSADError):
+    """Raised when a profiling run cannot be created or completed."""

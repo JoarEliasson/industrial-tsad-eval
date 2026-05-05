@@ -19,6 +19,7 @@ independent from command-line rendering and filesystem details.
 - Plugins implement ports and are discovered through registries.
 - CLI code performs argument parsing and rendering only.
 - Core code raises Python/domain exceptions; CLI code translates them to exit codes.
+- Optional torch imports stay inside torch plugin/model/helper modules.
 - Dataset preparation writes to a staging directory, validates Prepared Format v1,
   then promotes the result. Adapters never delete existing outputs directly.
 
@@ -47,3 +48,10 @@ then calls the existing scoring and evaluation use cases.
 Benchmark runs consume Prepared Format directories only. Raw-data preparation
 stays explicit through `itse prepared prepare`, which keeps benchmark runs
 repeatable and avoids hidden data mutation.
+
+## System And Profiling Slice
+
+System diagnostics are read-only probes that produce structured JSON reports.
+Profiling wraps existing application services and writes measured artifacts
+beside the normal score/evaluation outputs. It does not add a second scoring or
+evaluation path.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from industrial_tsad_eval.interfaces.cli.main import app
@@ -56,6 +57,43 @@ def test_cli_core_vertical_slice(tmp_path: Path):
         ],
     )
     assert eval_result.exit_code == 0, eval_result.output
+
+
+def test_cli_lists_detectors():
+    result = runner.invoke(app, ["score", "detectors"])
+
+    assert result.exit_code == 0, result.output
+    assert "forecast-ridge" in result.output
+    assert "forecast-lstm" in result.output
+
+
+def test_cli_scores_with_torch_detector(tmp_path: Path):
+    pytest.importorskip("torch")
+    examples = tmp_path / "examples"
+    scores = tmp_path / "scores"
+    runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])
+
+    result = runner.invoke(
+        app,
+        [
+            "score",
+            "run",
+            "--prepared",
+            str(examples / "OPCUA_SYNTH"),
+            "--detector",
+            "forecast-lstm",
+            "--out",
+            str(scores),
+            "--parameters-json",
+            (
+                '{"window": 16, "train_stride": 8, "score_stride": 8, '
+                '"max_train_windows": 24, "epochs": 1, "batch_size": 8, '
+                '"device": "cpu", "hidden_size": 8}'
+            ),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_cli_prepared_adapters_describe_and_prepare(tmp_path: Path):
@@ -116,3 +154,52 @@ def test_cli_benchmark_commands(tmp_path: Path):
         ).exit_code
         == 0
     )
+
+
+def test_cli_system_and_profile_commands(tmp_path: Path):
+    examples = tmp_path / "examples"
+    runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])
+    prepared = examples / "OPCUA_SYNTH"
+
+    gpu = runner.invoke(app, ["system", "gpu-check", "--json"])
+    assert gpu.exit_code == 0, gpu.output
+
+    report_path = tmp_path / "machine_env.json"
+    report = runner.invoke(app, ["system", "report", "--out", str(report_path)])
+    assert report.exit_code == 0, report.output
+    assert report_path.exists()
+
+    preflight = runner.invoke(
+        app,
+        [
+            "system",
+            "preflight",
+            "--prepared",
+            str(prepared),
+            "--detector",
+            "forecast-ridge",
+            "--out",
+            str(tmp_path / "preflight"),
+        ],
+    )
+    assert preflight.exit_code == 0, preflight.output
+
+    profile = runner.invoke(
+        app,
+        [
+            "profile",
+            "run",
+            "--prepared",
+            str(prepared),
+            "--detector",
+            "forecast-ridge",
+            "--out",
+            str(tmp_path / "profiles"),
+            "--profile-id",
+            "cli-profile",
+            "--parameters-json",
+            '{"window": 24, "stride": 4, "lags": 1}',
+        ],
+    )
+    assert profile.exit_code == 0, profile.output
+    assert (tmp_path / "profiles" / "cli-profile" / "summary.json").exists()

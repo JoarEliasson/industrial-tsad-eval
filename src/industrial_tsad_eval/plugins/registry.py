@@ -62,9 +62,19 @@ class DatasetAdapterRegistry:
 def default_detector_registry() -> DetectorRegistry:
     """Create the default detector registry."""
     from industrial_tsad_eval.plugins.forecast_ridge import ForecastRidgePlugin
+    from industrial_tsad_eval.plugins.torch_detectors import (
+        DRAPlugin,
+        DRCADPlugin,
+        ForecastLSTMPlugin,
+        InterFusionPlugin,
+    )
 
     registry = DetectorRegistry()
     registry.register(ForecastRidgePlugin())
+    registry.register(ForecastLSTMPlugin())
+    registry.register(DRAPlugin())
+    registry.register(InterFusionPlugin())
+    registry.register(DRCADPlugin())
     return registry
 
 

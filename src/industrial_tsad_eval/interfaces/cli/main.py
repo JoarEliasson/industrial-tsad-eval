@@ -12,7 +12,12 @@ from rich.table import Table
 
 from industrial_tsad_eval.application.benchmark import RunBenchmark
 from industrial_tsad_eval.application.evaluation import EvaluateScores
+from industrial_tsad_eval.application.preflight import PreflightInput, RunPreflight
 from industrial_tsad_eval.application.preparation import PrepareDataset
+from industrial_tsad_eval.application.profiling import (
+    ProfileScoreEvaluate,
+    ProfileScoreEvaluateConfig,
+)
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
@@ -23,6 +28,13 @@ from industrial_tsad_eval.infrastructure.benchmark_config import (
     write_default_benchmark_config,
 )
 from industrial_tsad_eval.infrastructure.examples import make_opcua_fixture
+from industrial_tsad_eval.infrastructure.json_utils import write_json
+from industrial_tsad_eval.infrastructure.system import (
+    capture_machine_environment,
+    detect_system_gpus,
+    probe_torch_runtime,
+    recommend_backend_for_gpus,
+)
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
     default_detector_registry,
@@ -37,6 +49,8 @@ scores_app = typer.Typer(help="Score Contract workflows.")
 eval_app = typer.Typer(help="Evaluation workflows.")
 examples_app = typer.Typer(help="Synthetic example fixture workflows.")
 bench_app = typer.Typer(help="Benchmark orchestration workflows.")
+system_app = typer.Typer(help="System and accelerator diagnostics.")
+profile_app = typer.Typer(help="Runtime profiling workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
@@ -44,6 +58,8 @@ app.add_typer(scores_app, name="scores")
 app.add_typer(eval_app, name="eval")
 app.add_typer(examples_app, name="examples")
 app.add_typer(bench_app, name="bench")
+app.add_typer(system_app, name="system")
+app.add_typer(profile_app, name="profile")
 
 
 @prepared_app.command("validate")
@@ -162,6 +178,16 @@ def score_run(
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.__dict__)
+
+
+@score_app.command("detectors")
+def list_detectors() -> None:
+    """List registered detector plugins."""
+    registry = default_detector_registry()
+    table = Table("Name")
+    for name in registry.names():
+        table.add_row(name)
+    console.print(table)
 
 
 @scores_app.command("validate")
@@ -299,6 +325,130 @@ def bench_summarize(
     )
 
 
+@system_app.command("gpu-check")
+def system_gpu_check(
+    device: str = typer.Option("auto", "--device", help="Requested device: auto, cpu, cuda, xpu."),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of tables."),
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit nonzero when recommended backend is not ready."
+    ),
+) -> None:
+    """Inspect GPU adapters and torch runtime readiness."""
+    try:
+        gpus = detect_system_gpus()
+        runtime = probe_torch_runtime(device)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    recommended = recommend_backend_for_gpus(gpus)
+    recommended_ready = _backend_ready(recommended, runtime.to_dict())
+    payload = {
+        "system_gpus": [gpu.to_dict() for gpu in gpus],
+        "recommended_backend": recommended,
+        "recommended_backend_ready": recommended_ready,
+        "runtime": runtime.to_dict(),
+    }
+    if json_out:
+        console.print_json(data=payload)
+    else:
+        table = Table("GPU", "Vendor", "Source")
+        for gpu in gpus:
+            table.add_row(gpu.name, gpu.vendor, gpu.source)
+        if not gpus:
+            table.add_row("No GPU detected", "-", "-")
+        console.print(table)
+        console.print_json(data=payload["runtime"])
+    if strict and not recommended_ready:
+        raise typer.Exit(1)
+
+
+@system_app.command("report")
+def system_report(
+    out: Path = typer.Option(..., "--out", dir_okay=False, help="Machine report JSON file."),
+    device: str = typer.Option("auto", "--device", help="Requested device: auto, cpu, cuda, xpu."),
+    full_package_dump: bool = typer.Option(
+        False, "--full-package-dump", help="Include all packages."
+    ),
+) -> None:
+    """Write a machine environment report."""
+    try:
+        report = capture_machine_environment(
+            device_request=device,
+            full_package_dump=full_package_dump,
+        )
+        write_json(out, report.to_dict())
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data={"out": str(out), "machine_profile": report.machine_profile})
+
+
+@system_app.command("preflight")
+def system_preflight(
+    prepared: Path | None = typer.Option(
+        None, "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    detector: str | None = typer.Option(None, "--detector", help="Detector plugin name."),
+    parameters_json: str | None = typer.Option(
+        None, "--parameters-json", help="Detector parameter JSON object."
+    ),
+    device: str = typer.Option("auto", "--device", help="Requested device: auto, cpu, cuda, xpu."),
+    out: Path | None = typer.Option(
+        None, "--out", file_okay=False, help="Optional report output directory."
+    ),
+    strict: bool = typer.Option(False, "--strict", help="Exit nonzero when preflight fails."),
+) -> None:
+    """Run dataset, detector, runtime, and output preflight checks."""
+    try:
+        report = RunPreflight(
+            detector_registry=default_detector_registry(),
+            config=PreflightInput(
+                prepared=prepared,
+                detector_name=detector,
+                detector_parameters=_json_object(parameters_json),
+                device=device,
+                out=out,
+                strict=False,
+            ),
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=report.to_dict())
+    if strict and not report.ok:
+        raise typer.Exit(1)
+
+
+@profile_app.command("run")
+def profile_run(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    detector: str = typer.Option(..., "--detector", help="Detector plugin name."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Profile output root."),
+    protocol: str = typer.Option("naive", "--protocol", help="Split protocol."),
+    parameters_json: str | None = typer.Option(
+        None, "--parameters-json", help="Detector parameter JSON object."
+    ),
+    device: str = typer.Option("auto", "--device", help="Requested device: auto, cpu, cuda, xpu."),
+    profile_id: str | None = typer.Option(None, "--profile-id", help="Optional profile id."),
+) -> None:
+    """Profile validate, score, validate scores, and evaluate stages."""
+    try:
+        result = ProfileScoreEvaluate(
+            detector_registry=default_detector_registry(),
+            config=ProfileScoreEvaluateConfig(
+                prepared=prepared,
+                detector_name=detector,
+                out=out,
+                protocol=protocol,
+                detector_parameters=_json_object(parameters_json),
+                device=device,
+                profile_id=profile_id,
+            ),
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
 def _emit_validation(report: dict[str, Any]) -> None:
     console.print_json(data=report)
     if not bool(report.get("ok")):
@@ -317,3 +467,13 @@ def _json_object(value: str | None) -> dict[str, Any]:
 def _fail(message: str) -> NoReturn:
     console.print(f"[red]{message}[/red]")
     raise typer.Exit(1)
+
+
+def _backend_ready(backend: str, runtime: dict[str, Any]) -> bool:
+    if backend == "cpu":
+        return True
+    if backend == "cuda":
+        return bool(runtime.get("cuda_available"))
+    if backend == "xpu":
+        return bool(runtime.get("xpu_available"))
+    return False

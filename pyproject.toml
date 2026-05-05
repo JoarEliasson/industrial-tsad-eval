@@ -28,6 +28,13 @@ datasets = [
   "pyreadr>=0.5",
   "scipy>=1.10",
 ]
+torch = [
+  "torch>=2.2",
+]
+profile = [
+  "nvidia-ml-py>=12",
+  "psutil>=5.9",
+]
 dev = [
   "mypy>=1.10",
   "pytest>=8.0",

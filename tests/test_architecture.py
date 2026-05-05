@@ -47,5 +47,44 @@ def test_adapters_do_not_directly_delete_output_trees():
     assert offenders == []
 
 
+def test_torch_imports_stay_inside_torch_plugin_modules():
+    offenders: list[str] = []
+    for path in _python_files():
+        relative = str(path.relative_to(SRC_ROOT)).replace("\\", "/")
+        if relative.startswith("plugins/torch_"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = {node.module.split(".")[0]}
+            else:
+                continue
+            if "torch" in names:
+                offenders.append(relative)
+
+    assert offenders == []
+
+
+def test_optional_profile_dependencies_are_lazy_imports():
+    offenders: list[str] = []
+    optional_modules = {"psutil", "pynvml"}
+    for path in _python_files():
+        relative = str(path.relative_to(SRC_ROOT)).replace("\\", "/")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = {node.module.split(".")[0]}
+            else:
+                continue
+            if names & optional_modules:
+                offenders.append(relative)
+
+    assert offenders == []
+
+
 def _python_files() -> list[Path]:
     return sorted(path for path in SRC_ROOT.rglob("*.py") if "__pycache__" not in path.parts)

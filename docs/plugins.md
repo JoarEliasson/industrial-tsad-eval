@@ -13,6 +13,38 @@ A detector plugin provides:
 The detector reads data through a `PreparedDatasetRepository` port and returns
 Score Contract v1 rows as a dataframe. It does not write files directly.
 
+Built-in detectors:
+
+- `forecast-ridge`: scikit-learn ridge next-step forecasting baseline.
+- `forecast-lstm`: optional torch LSTM next-step forecaster.
+- `dra`: optional torch detection-only DRA Model 1 TCN forecaster.
+- `interfusion`: optional torch detection-only HVAE window detector.
+- `drcad`: optional torch detection-only dual-view contrastive detector.
+
+Torch-backed detectors share these parameters:
+
+- `window`, `train_stride`, `score_stride`, `max_train_windows`
+- `epochs`, `batch_size`, `lr`, `seed`, `device`, `standardize`
+
+Install optional torch support with:
+
+```powershell
+python -m pip install -e ".[torch]"
+```
+
+For CUDA or XPU runtimes, install the PyTorch wheel recommended by the PyTorch
+selector, then install this package. The supported device values are `auto`,
+`cpu`, `cuda`, and `xpu`.
+
+Example benchmark detector entry:
+
+```toml
+[[detectors]]
+id = "forecast-lstm-tiny"
+name = "forecast-lstm"
+parameters = { window = 16, train_stride = 8, score_stride = 8, epochs = 1, batch_size = 8, device = "cpu", hidden_size = 8 }
+```
+
 ## Dataset Adapter Plugins
 
 Dataset adapters convert local raw data into Prepared Format v1. A plugin

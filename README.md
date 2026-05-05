@@ -6,9 +6,9 @@ a stable Prepared Format, writes detector outputs through a Score Contract, and
 evaluates event-level detection quality with reproducible artifact outputs.
 
 The project is intentionally structured around ports and plugins. The default
-distribution ships dataset adapter plugins, a compact ForecastRidge detector
-plugin, and a generated OPC-UA-like fixture so the full pipeline can run without
-vendored industrial data.
+distribution ships dataset adapter plugins, a compact ForecastRidge detector,
+optional torch-backed detector plugins, and a generated OPC-UA-like fixture so
+the full pipeline can run without vendored industrial data.
 
 ## Quickstart
 
@@ -21,6 +21,18 @@ itse score run --prepared examples/generated/OPCUA_SYNTH --detector forecast-rid
 itse scores validate --prepared examples/generated/OPCUA_SYNTH --scores out/scores
 itse eval run --prepared examples/generated/OPCUA_SYNTH --scores out/scores --out out/eval
 ```
+
+Torch-backed detectors are optional:
+
+```powershell
+python -m pip install -e ".[torch]"
+
+itse score detectors
+itse score run --prepared examples/generated/OPCUA_SYNTH --detector forecast-lstm --out out/lstm-scores --parameters-json "{\"window\": 16, \"train_stride\": 8, \"score_stride\": 8, \"epochs\": 1, \"device\": \"cpu\"}"
+```
+
+Use the PyTorch selector wheel instructions for CUDA or XPU installations when
+the default `torch` wheel is not the desired runtime.
 
 Dataset adapters are available for local raw TEP, SWaT, HAI, and HAI-CPPS data:
 
@@ -43,6 +55,14 @@ itse bench run --config benchmarks/opcua.toml --out out/benchmarks
 itse bench summarize --run out/benchmarks/opcua-smoke-<timestamp>
 ```
 
+System diagnostics and profiling make runs reproducible:
+
+```powershell
+itse system gpu-check --device auto --json
+itse system preflight --prepared examples/generated/OPCUA_SYNTH --detector forecast-ridge --out out/preflight --strict
+itse profile run --prepared examples/generated/OPCUA_SYNTH --detector forecast-ridge --out out/profiles --profile-id smoke
+```
+
 ## Architecture
 
 The package uses a hexagonal structure:
@@ -57,6 +77,10 @@ The package uses a hexagonal structure:
 Core code does not import CLI/UI libraries. Workflows are exposed as application
 services, while the CLI only parses arguments, calls a service, and renders
 results.
+
+Torch imports are isolated to optional torch plugin modules. The default
+registry can list torch-backed detector plugins even when torch is not installed;
+training one of those detectors raises a clear optional-dependency error.
 
 ## Data Contracts
 
@@ -90,7 +114,8 @@ Benchmark runs create:
 ```
 
 See [docs/contracts.md](docs/contracts.md), [docs/plugins.md](docs/plugins.md),
-and [docs/benchmarks.md](docs/benchmarks.md) for details.
+[docs/benchmarks.md](docs/benchmarks.md), [docs/system.md](docs/system.md), and
+[docs/profiling.md](docs/profiling.md) for details.
 
 ## Development
 

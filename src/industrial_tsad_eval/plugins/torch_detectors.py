@@ -1,0 +1,748 @@
+"""Optional torch-backed detector plugins."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from industrial_tsad_eval.plugins.torch_common import (
+    FeatureStandardizer,
+    TorchTrainingConfig,
+    batch_slices,
+    cap_aligned_arrays,
+    empty_score_frame,
+    feature_columns,
+    forecast_windows,
+    read_feature_array,
+    require_torch,
+    resolve_torch_device,
+    score_frame,
+    set_torch_seed,
+    torch_device_name,
+    training_arrays,
+    window_end_windows,
+)
+from industrial_tsad_eval.plugins.torch_models import (
+    build_drcad,
+    build_hvae,
+    build_lstm_forecaster,
+    build_tcn_forecaster,
+)
+from industrial_tsad_eval.ports.detectors import Detector, DetectorRunConfig
+from industrial_tsad_eval.ports.repositories import PreparedDatasetRepository
+
+
+@dataclass(frozen=True)
+class ForecastLSTMConfig:
+    """Configuration for the ForecastLSTM plugin."""
+
+    common: TorchTrainingConfig
+    hidden_size: int = 32
+    num_layers: int = 1
+    dropout: float = 0.0
+
+    @classmethod
+    def from_parameters(cls, parameters: dict[str, Any]) -> ForecastLSTMConfig:
+        """Build config from detector parameters."""
+        config = cls(
+            common=TorchTrainingConfig.from_parameters(parameters),
+            hidden_size=int(parameters.get("hidden_size", cls.hidden_size)),
+            num_layers=int(parameters.get("num_layers", cls.num_layers)),
+            dropout=float(parameters.get("dropout", cls.dropout)),
+        )
+        if config.hidden_size <= 0:
+            raise ValueError("hidden_size must be greater than 0.")
+        if config.num_layers <= 0:
+            raise ValueError("num_layers must be greater than 0.")
+        if config.dropout < 0:
+            raise ValueError("dropout must be non-negative.")
+        return config
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible metadata."""
+        return {
+            **self.common.to_dict(),
+            "hidden_size": self.hidden_size,
+            "num_layers": self.num_layers,
+            "dropout": self.dropout,
+        }
+
+
+@dataclass(frozen=True)
+class DRAConfig:
+    """Configuration for detection-only DRA Model 1."""
+
+    common: TorchTrainingConfig
+    d: int = 16
+
+    @classmethod
+    def from_parameters(cls, parameters: dict[str, Any]) -> DRAConfig:
+        """Build config from detector parameters."""
+        config = cls(
+            common=TorchTrainingConfig.from_parameters(parameters),
+            d=int(parameters.get("d", cls.d)),
+        )
+        if config.d <= 0:
+            raise ValueError("d must be greater than 0.")
+        return config
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible metadata."""
+        return {**self.common.to_dict(), "d": self.d}
+
+
+@dataclass(frozen=True)
+class InterFusionConfig:
+    """Configuration for detection-only InterFusion HVAE."""
+
+    common: TorchTrainingConfig
+    latent_dim: int = 3
+    kl_warmup: int = 2
+
+    @classmethod
+    def from_parameters(cls, parameters: dict[str, Any]) -> InterFusionConfig:
+        """Build config from detector parameters."""
+        config = cls(
+            common=TorchTrainingConfig.from_parameters(parameters),
+            latent_dim=int(parameters.get("latent_dim", cls.latent_dim)),
+            kl_warmup=int(parameters.get("kl_warmup", cls.kl_warmup)),
+        )
+        if config.latent_dim <= 0:
+            raise ValueError("latent_dim must be greater than 0.")
+        if config.kl_warmup < 0:
+            raise ValueError("kl_warmup must be non-negative.")
+        return config
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible metadata."""
+        return {**self.common.to_dict(), "latent_dim": self.latent_dim, "kl_warmup": self.kl_warmup}
+
+
+@dataclass(frozen=True)
+class DRCADConfig:
+    """Configuration for detection-only DRCAD."""
+
+    common: TorchTrainingConfig
+    patch_size: int = 4
+    d_model: int = 32
+    n_heads: int = 4
+    n_layers: int = 1
+    mlp_dim: int = 64
+    dropout: float = 0.1
+
+    @classmethod
+    def from_parameters(cls, parameters: dict[str, Any]) -> DRCADConfig:
+        """Build config from detector parameters."""
+        config = cls(
+            common=TorchTrainingConfig.from_parameters(parameters),
+            patch_size=int(parameters.get("patch_size", cls.patch_size)),
+            d_model=int(parameters.get("d_model", cls.d_model)),
+            n_heads=int(parameters.get("n_heads", cls.n_heads)),
+            n_layers=int(parameters.get("n_layers", cls.n_layers)),
+            mlp_dim=int(parameters.get("mlp_dim", cls.mlp_dim)),
+            dropout=float(parameters.get("dropout", cls.dropout)),
+        )
+        if config.patch_size <= 0:
+            raise ValueError("patch_size must be greater than 0.")
+        if config.common.window % config.patch_size != 0:
+            raise ValueError("window must be divisible by patch_size.")
+        if config.d_model <= 0:
+            raise ValueError("d_model must be greater than 0.")
+        if config.n_heads <= 0:
+            raise ValueError("n_heads must be greater than 0.")
+        if config.d_model % config.n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads.")
+        if config.n_layers <= 0:
+            raise ValueError("n_layers must be greater than 0.")
+        if config.mlp_dim <= 0:
+            raise ValueError("mlp_dim must be greater than 0.")
+        if config.dropout < 0:
+            raise ValueError("dropout must be non-negative.")
+        return config
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible metadata."""
+        return {
+            **self.common.to_dict(),
+            "patch_size": self.patch_size,
+            "d_model": self.d_model,
+            "n_heads": self.n_heads,
+            "n_layers": self.n_layers,
+            "mlp_dim": self.mlp_dim,
+            "dropout": self.dropout,
+        }
+
+
+class ForecastLSTMDetector:
+    """Many-to-one LSTM next-step forecasting detector."""
+
+    def __init__(self, config: ForecastLSTMConfig):
+        self.config = config
+        self.model: Any | None = None
+        self.torch: Any | None = None
+        self.device = "cpu"
+        self.device_name: str | None = None
+        self.features: list[str] = []
+        self.standardizer = FeatureStandardizer(enabled=False)
+        self.train_window_count = 0
+        self.training_losses: list[float] = []
+
+    def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
+        """Fit the LSTM forecaster on normal train and validation runs."""
+        torch = _initialize_torch(self, self.config.common)
+        self.features = feature_columns(repository)
+        _run_ids, arrays = training_arrays(repository, protocol, self.features)
+        self.standardizer = FeatureStandardizer.fit(arrays, self.config.common.standardize)
+        x_train, y_train = _forecast_training_matrices(
+            self.config.common, arrays, self.standardizer
+        )
+        self.train_window_count = int(x_train.shape[0])
+        self.model = build_lstm_forecaster(
+            torch,
+            feature_count=len(self.features),
+            hidden_size=self.config.hidden_size,
+            num_layers=self.config.num_layers,
+            dropout=self.config.dropout,
+        ).to(self.device)
+        self.training_losses = _train_forecast_model(
+            torch,
+            self.model,
+            x_train,
+            y_train,
+            self.config.common,
+            input_layout="time_feature",
+        )
+
+    def score_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Score one prepared run using next-step forecast residuals."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, y, target_indices = forecast_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return empty_score_frame()
+        scores = _score_forecast_model(
+            torch,
+            model,
+            x,
+            y,
+            self.config.common,
+            self.device,
+            input_layout="time_feature",
+        )
+        return score_frame(ts_ns, target_indices, scores)
+
+    def metadata(self) -> dict[str, Any]:
+        """Return detector metadata for score artifact provenance."""
+        return _metadata(
+            "forecast-lstm",
+            self.config.to_dict(),
+            self.device,
+            self.device_name,
+            self.features,
+            self.train_window_count,
+            self.training_losses,
+        )
+
+
+class DRADetector:
+    """Detection-only DRA Model 1 using a compact TCN forecaster."""
+
+    def __init__(self, config: DRAConfig):
+        self.config = config
+        self.model: Any | None = None
+        self.torch: Any | None = None
+        self.device = "cpu"
+        self.device_name: str | None = None
+        self.features: list[str] = []
+        self.standardizer = FeatureStandardizer(enabled=False)
+        self.train_window_count = 0
+        self.training_losses: list[float] = []
+
+    def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
+        """Fit the TCN forecaster on normal train and validation runs."""
+        torch = _initialize_torch(self, self.config.common)
+        self.features = feature_columns(repository)
+        _run_ids, arrays = training_arrays(repository, protocol, self.features)
+        self.standardizer = FeatureStandardizer.fit(arrays, self.config.common.standardize)
+        x_train, y_train = _forecast_training_matrices(
+            self.config.common, arrays, self.standardizer
+        )
+        self.train_window_count = int(x_train.shape[0])
+        self.model = build_tcn_forecaster(
+            torch,
+            feature_count=len(self.features),
+            d=self.config.d,
+        ).to(self.device)
+        self.training_losses = _train_forecast_model(
+            torch,
+            self.model,
+            x_train,
+            y_train,
+            self.config.common,
+            input_layout="feature_time",
+        )
+
+    def score_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Score one prepared run using mean absolute forecast residual."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, y, target_indices = forecast_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return empty_score_frame()
+        scores = _score_forecast_model(
+            torch,
+            model,
+            x,
+            y,
+            self.config.common,
+            self.device,
+            input_layout="feature_time",
+            absolute=True,
+        )
+        return score_frame(ts_ns, target_indices, scores)
+
+    def metadata(self) -> dict[str, Any]:
+        """Return detector metadata for score artifact provenance."""
+        return _metadata(
+            "dra",
+            self.config.to_dict(),
+            self.device,
+            self.device_name,
+            self.features,
+            self.train_window_count,
+            self.training_losses,
+        )
+
+
+class InterFusionDetector:
+    """Detection-only InterFusion HVAE window reconstruction detector."""
+
+    def __init__(self, config: InterFusionConfig):
+        self.config = config
+        self.model: Any | None = None
+        self.torch: Any | None = None
+        self.device = "cpu"
+        self.device_name: str | None = None
+        self.features: list[str] = []
+        self.standardizer = FeatureStandardizer(enabled=False)
+        self.train_window_count = 0
+        self.training_losses: list[float] = []
+
+    def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
+        """Fit the HVAE on normal train and validation windows."""
+        torch = _initialize_torch(self, self.config.common)
+        self.features = feature_columns(repository)
+        _run_ids, arrays = training_arrays(repository, protocol, self.features)
+        self.standardizer = FeatureStandardizer.fit(arrays, self.config.common.standardize)
+        x_train = _window_training_matrix(self.config.common, arrays, self.standardizer)
+        self.train_window_count = int(x_train.shape[0])
+        self.model = build_hvae(
+            torch,
+            feature_count=len(self.features),
+            window=self.config.common.window,
+            latent_dim=self.config.latent_dim,
+        ).to(self.device)
+        self.training_losses = _train_hvae_model(torch, self.model, x_train, self.config)
+
+    def score_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Score one prepared run using HVAE reconstruction error."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, end_indices = window_end_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return empty_score_frame()
+        scores = _score_window_model(torch, model, x, self.config.common, self.device)
+        return score_frame(ts_ns, end_indices, scores)
+
+    def metadata(self) -> dict[str, Any]:
+        """Return detector metadata for score artifact provenance."""
+        return _metadata(
+            "interfusion",
+            self.config.to_dict(),
+            self.device,
+            self.device_name,
+            self.features,
+            self.train_window_count,
+            self.training_losses,
+        )
+
+
+class DRCADDetector:
+    """Detection-only DRCAD dual-view contrastive detector."""
+
+    def __init__(self, config: DRCADConfig):
+        self.config = config
+        self.model: Any | None = None
+        self.torch: Any | None = None
+        self.device = "cpu"
+        self.device_name: str | None = None
+        self.features: list[str] = []
+        self.standardizer = FeatureStandardizer(enabled=False)
+        self.train_window_count = 0
+        self.training_losses: list[float] = []
+
+    def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
+        """Fit the dual-view contrastive model on normal windows."""
+        torch = _initialize_torch(self, self.config.common)
+        self.features = feature_columns(repository)
+        _run_ids, arrays = training_arrays(repository, protocol, self.features)
+        self.standardizer = FeatureStandardizer.fit(arrays, self.config.common.standardize)
+        x_train = _window_training_matrix(self.config.common, arrays, self.standardizer)
+        self.train_window_count = int(x_train.shape[0])
+        self.model = build_drcad(
+            torch,
+            feature_count=len(self.features),
+            window=self.config.common.window,
+            patch_size=self.config.patch_size,
+            d_model=self.config.d_model,
+            n_heads=self.config.n_heads,
+            n_layers=self.config.n_layers,
+            mlp_dim=self.config.mlp_dim,
+            dropout=self.config.dropout,
+        ).to(self.device)
+        self.training_losses = _train_drcad_model(torch, self.model, x_train, self.config.common)
+
+    def score_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Score one prepared run using symmetric dual-view KL divergence."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, end_indices = window_end_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return empty_score_frame()
+        scores = _score_window_model(torch, model, x, self.config.common, self.device)
+        return score_frame(ts_ns, end_indices, scores)
+
+    def metadata(self) -> dict[str, Any]:
+        """Return detector metadata for score artifact provenance."""
+        return _metadata(
+            "drcad",
+            self.config.to_dict(),
+            self.device,
+            self.device_name,
+            self.features,
+            self.train_window_count,
+            self.training_losses,
+        )
+
+
+class ForecastLSTMPlugin:
+    """Factory for the ForecastLSTM detector."""
+
+    @property
+    def name(self) -> str:
+        """Return the registry name."""
+        return "forecast-lstm"
+
+    def create(self, config: DetectorRunConfig) -> Detector:
+        """Create an unfitted ForecastLSTM detector."""
+        return ForecastLSTMDetector(ForecastLSTMConfig.from_parameters(config.parameters))
+
+
+class DRAPlugin:
+    """Factory for the detection-only DRA detector."""
+
+    @property
+    def name(self) -> str:
+        """Return the registry name."""
+        return "dra"
+
+    def create(self, config: DetectorRunConfig) -> Detector:
+        """Create an unfitted DRA detector."""
+        return DRADetector(DRAConfig.from_parameters(config.parameters))
+
+
+class InterFusionPlugin:
+    """Factory for the detection-only InterFusion detector."""
+
+    @property
+    def name(self) -> str:
+        """Return the registry name."""
+        return "interfusion"
+
+    def create(self, config: DetectorRunConfig) -> Detector:
+        """Create an unfitted InterFusion detector."""
+        return InterFusionDetector(InterFusionConfig.from_parameters(config.parameters))
+
+
+class DRCADPlugin:
+    """Factory for the detection-only DRCAD detector."""
+
+    @property
+    def name(self) -> str:
+        """Return the registry name."""
+        return "drcad"
+
+    def create(self, config: DetectorRunConfig) -> Detector:
+        """Create an unfitted DRCAD detector."""
+        return DRCADDetector(DRCADConfig.from_parameters(config.parameters))
+
+
+def _initialize_torch(detector: Any, config: TorchTrainingConfig) -> Any:
+    torch = require_torch()
+    set_torch_seed(torch, config.seed)
+    detector.torch = torch
+    detector.device = resolve_torch_device(torch, config.device)
+    detector.device_name = torch_device_name(torch, detector.device)
+    return torch
+
+
+def _fitted(detector: Any) -> tuple[Any, Any]:
+    if detector.torch is None or detector.model is None:
+        raise RuntimeError("Detector must be trained before scoring.")
+    return detector.torch, detector.model
+
+
+def _forecast_training_matrices(
+    config: TorchTrainingConfig,
+    arrays: list[np.ndarray],
+    standardizer: FeatureStandardizer,
+) -> tuple[np.ndarray, np.ndarray]:
+    x_parts: list[np.ndarray] = []
+    y_parts: list[np.ndarray] = []
+    for array in arrays:
+        x_run, y_run, _indices = forecast_windows(
+            standardizer.transform(array),
+            window=config.window,
+            stride=config.train_stride,
+        )
+        if len(x_run) > 0:
+            x_parts.append(x_run)
+            y_parts.append(y_run)
+    if not x_parts:
+        raise ValueError("No valid training windows produced.")
+    x_train = np.concatenate(x_parts, axis=0)
+    y_train = np.concatenate(y_parts, axis=0)
+    x_train, y_train = cap_aligned_arrays(
+        (x_train, y_train),
+        max_count=config.max_train_windows,
+        seed=config.seed,
+    )
+    return x_train, y_train
+
+
+def _window_training_matrix(
+    config: TorchTrainingConfig,
+    arrays: list[np.ndarray],
+    standardizer: FeatureStandardizer,
+) -> np.ndarray:
+    x_parts: list[np.ndarray] = []
+    for array in arrays:
+        x_run, _indices = window_end_windows(
+            standardizer.transform(array),
+            window=config.window,
+            stride=config.train_stride,
+        )
+        if len(x_run) > 0:
+            x_parts.append(x_run)
+    if not x_parts:
+        raise ValueError("No valid training windows produced.")
+    x_train = np.concatenate(x_parts, axis=0)
+    (x_train,) = cap_aligned_arrays(
+        (x_train,),
+        max_count=config.max_train_windows,
+        seed=config.seed,
+    )
+    return x_train
+
+
+def _train_forecast_model(
+    torch: Any,
+    model: Any,
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    config: TorchTrainingConfig,
+    *,
+    input_layout: str,
+) -> list[float]:
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+    x_tensor = torch.tensor(_layout(x_train, input_layout), dtype=torch.float32)
+    y_tensor = torch.tensor(y_train, dtype=torch.float32)
+    dataset = torch.utils.data.TensorDataset(x_tensor, y_tensor)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(config.seed),
+    )
+    losses: list[float] = []
+    model.train()
+    for _epoch in range(config.epochs):
+        total_loss = 0.0
+        seen = 0
+        for batch_x, batch_y in loader:
+            batch_x = batch_x.to(config.device if config.device != "auto" else "cpu")
+            batch_y = batch_y.to(config.device if config.device != "auto" else "cpu")
+            batch_x = batch_x.to(next(model.parameters()).device)
+            batch_y = batch_y.to(next(model.parameters()).device)
+            prediction = model(batch_x)
+            loss = torch.nn.functional.mse_loss(prediction, batch_y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += float(loss.item()) * int(batch_x.shape[0])
+            seen += int(batch_x.shape[0])
+        losses.append(total_loss / max(seen, 1))
+    return losses
+
+
+def _score_forecast_model(
+    torch: Any,
+    model: Any,
+    x: np.ndarray,
+    y: np.ndarray,
+    config: TorchTrainingConfig,
+    device: str,
+    *,
+    input_layout: str,
+    absolute: bool = False,
+) -> np.ndarray:
+    scores = np.empty(x.shape[0], dtype=np.float64)
+    model.eval()
+    with torch.no_grad():
+        for window_slice in batch_slices(x.shape[0], config.score_batch_size):
+            batch_x = torch.tensor(_layout(x[window_slice], input_layout), dtype=torch.float32).to(
+                device
+            )
+            batch_y = torch.tensor(y[window_slice], dtype=torch.float32).to(device)
+            prediction = model(batch_x)
+            residual = prediction - batch_y
+            batch_scores = residual.abs().mean(dim=-1) if absolute else (residual**2).mean(dim=-1)
+            scores[window_slice] = batch_scores.cpu().numpy()
+    return scores
+
+
+def _train_hvae_model(
+    torch: Any,
+    model: Any,
+    x_train: np.ndarray,
+    config: InterFusionConfig,
+) -> list[float]:
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.common.lr)
+    x_tensor = torch.tensor(x_train, dtype=torch.float32)
+    dataset = torch.utils.data.TensorDataset(x_tensor)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=config.common.batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(config.common.seed),
+    )
+    losses: list[float] = []
+    model.train()
+    for epoch in range(config.common.epochs):
+        kl_weight = min(1.0, (epoch + 1) / max(config.kl_warmup, 1))
+        losses.append(
+            _train_window_epoch(torch, model, optimizer, loader, config.common.device, kl_weight)
+        )
+    return losses
+
+
+def _train_drcad_model(
+    torch: Any,
+    model: Any,
+    x_train: np.ndarray,
+    config: TorchTrainingConfig,
+) -> list[float]:
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+    x_tensor = torch.tensor(x_train, dtype=torch.float32)
+    dataset = torch.utils.data.TensorDataset(x_tensor)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(config.seed),
+    )
+    losses: list[float] = []
+    model.train()
+    for _epoch in range(config.epochs):
+        losses.append(_train_window_epoch(torch, model, optimizer, loader, config.device, 1.0))
+    return losses
+
+
+def _train_window_epoch(
+    torch: Any,
+    model: Any,
+    optimizer: Any,
+    loader: Any,
+    requested_device: str,
+    kl_weight: float,
+) -> float:
+    total_loss = 0.0
+    seen = 0
+    for (batch_x,) in loader:
+        batch_x = batch_x.to(requested_device if requested_device != "auto" else "cpu")
+        batch_x = batch_x.to(next(model.parameters()).device)
+        if hasattr(model, "negative_elbo"):
+            loss = model.negative_elbo(batch_x, kl_weight)
+        else:
+            loss = model.contrastive_loss(batch_x)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += float(loss.item()) * int(batch_x.shape[0])
+        seen += int(batch_x.shape[0])
+    return total_loss / max(seen, 1)
+
+
+def _score_window_model(
+    torch: Any,
+    model: Any,
+    x: np.ndarray,
+    config: TorchTrainingConfig,
+    device: str,
+) -> np.ndarray:
+    scores = np.empty(x.shape[0], dtype=np.float64)
+    model.eval()
+    with torch.no_grad():
+        for window_slice in batch_slices(x.shape[0], config.score_batch_size):
+            batch_x = torch.tensor(x[window_slice], dtype=torch.float32).to(device)
+            scores[window_slice] = model.deterministic_score(batch_x).cpu().numpy()
+    return scores
+
+
+def _layout(array: np.ndarray, layout: str) -> np.ndarray:
+    if layout == "feature_time":
+        return np.transpose(array, (0, 2, 1)).copy()
+    return array
+
+
+def _metadata(
+    detector: str,
+    parameters: dict[str, Any],
+    device: str,
+    device_name: str | None,
+    features: list[str],
+    train_window_count: int,
+    training_losses: list[float],
+) -> dict[str, Any]:
+    return {
+        "detector": detector,
+        "parameters": parameters,
+        "resolved_device": device,
+        "device_name": device_name,
+        "feature_columns": list(features),
+        "train_window_count": train_window_count,
+        "training_losses": list(training_losses),
+    }

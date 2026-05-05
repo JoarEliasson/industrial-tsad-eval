@@ -21,6 +21,11 @@ prepared = "examples/generated/OPCUA_SYNTH"
 id = "forecast-ridge-default"
 name = "forecast-ridge"
 parameters = { window = 32, stride = 4, lags = 1, alpha = 1.0, standardize = true, seed = 1337 }
+
+[[detectors]]
+id = "forecast-lstm-tiny"
+name = "forecast-lstm"
+parameters = { window = 16, train_stride = 8, score_stride = 8, epochs = 1, batch_size = 8, device = "cpu", hidden_size = 8 }
 ```
 
 Relative `prepared` paths are resolved relative to the TOML file. Dataset ids,
