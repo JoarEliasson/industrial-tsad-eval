@@ -43,6 +43,17 @@ def test_new_package_does_not_import_legacy_tsad_package():
     assert offenders == []
 
 
+def test_dataset_adapters_do_not_delete_output_directly():
+    offenders: list[str] = []
+    adapters_root = SRC_ROOT / "plugins" / "datasets"
+    for path in sorted(adapters_root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _is_rmtree_call(node.func):
+                offenders.append(str(path.relative_to(SRC_ROOT)))
+    assert offenders == []
+
+
 def test_detector_name_branching_is_not_used_for_dispatch():
     offenders: list[str] = []
     for path in _python_files():
@@ -60,4 +71,12 @@ def _mentions_detector_name(node: ast.AST) -> bool:
     for child in ast.walk(node):
         if isinstance(child, ast.Name) and child.id in {"detector", "detector_name"}:
             return True
+    return False
+
+
+def _is_rmtree_call(node: ast.AST) -> bool:
+    if isinstance(node, ast.Attribute):
+        return node.attr == "rmtree"
+    if isinstance(node, ast.Name):
+        return node.id == "rmtree"
     return False

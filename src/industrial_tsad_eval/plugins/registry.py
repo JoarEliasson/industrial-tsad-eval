@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from industrial_tsad_eval.domain.errors import PluginNotFoundError
+from industrial_tsad_eval.ports.dataset_adapters import DatasetAdapterPlugin
 from industrial_tsad_eval.ports.detectors import DetectorPlugin
 
 
@@ -33,10 +34,50 @@ class DetectorRegistry:
         return sorted(self._plugins)
 
 
+@dataclass
+class DatasetAdapterRegistry:
+    """In-memory registry for dataset adapter plugins."""
+
+    _plugins: dict[str, DatasetAdapterPlugin] = field(default_factory=dict)
+
+    def register(self, plugin: DatasetAdapterPlugin) -> None:
+        """Register or replace a dataset adapter by stable name."""
+        self._plugins[plugin.name] = plugin
+
+    def get_dataset_adapter(self, name: str) -> DatasetAdapterPlugin:
+        """Return a registered dataset adapter plugin."""
+        try:
+            return self._plugins[name]
+        except KeyError as exc:
+            available = ", ".join(sorted(self._plugins)) or "<none>"
+            raise PluginNotFoundError(
+                f"Unknown dataset adapter {name!r}. Available adapters: {available}."
+            ) from exc
+
+    def names(self) -> list[str]:
+        """Return registered dataset adapter names."""
+        return sorted(self._plugins)
+
+
 def default_detector_registry() -> DetectorRegistry:
     """Create the default detector registry."""
     from industrial_tsad_eval.plugins.forecast_ridge import ForecastRidgePlugin
 
     registry = DetectorRegistry()
     registry.register(ForecastRidgePlugin())
+    return registry
+
+
+def default_dataset_adapter_registry() -> DatasetAdapterRegistry:
+    """Create the default dataset adapter registry."""
+    from industrial_tsad_eval.plugins.datasets.hai import HAIDatasetAdapterPlugin
+    from industrial_tsad_eval.plugins.datasets.hai_cpps import HAICPPSDatasetAdapterPlugin
+    from industrial_tsad_eval.plugins.datasets.swat import SWaTDatasetAdapterPlugin
+    from industrial_tsad_eval.plugins.datasets.tep import TEPDatasetAdapterPlugin
+
+    registry = DatasetAdapterRegistry()
+    registry.register(TEPDatasetAdapterPlugin())
+    registry.register(SWaTDatasetAdapterPlugin())
+    registry.register(HAIDatasetAdapterPlugin())
+    registry.register(HAICPPSDatasetAdapterPlugin())
     return registry

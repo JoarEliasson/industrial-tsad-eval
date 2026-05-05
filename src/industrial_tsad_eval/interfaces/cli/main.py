@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from industrial_tsad_eval.application.evaluation import EvaluateScores
+from industrial_tsad_eval.application.preparation import PrepareDataset
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
+from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
 from industrial_tsad_eval.domain.errors import IndustrialTSADError
 from industrial_tsad_eval.infrastructure.examples import make_opcua_fixture
-from industrial_tsad_eval.plugins.registry import default_detector_registry
+from industrial_tsad_eval.plugins.registry import (
+    default_dataset_adapter_registry,
+    default_detector_registry,
+)
 
 console = Console()
 app = typer.Typer(
@@ -45,6 +50,65 @@ def validate_prepared_cmd(
     _print_validation_report("Prepared Dataset", report.to_dict())
     if not report.ok:
         raise typer.Exit(2)
+
+
+@prepared_app.command("adapters")
+def list_prepared_adapters_cmd() -> None:
+    """List built-in dataset adapter plugins."""
+    registry = default_dataset_adapter_registry()
+    table = Table(title="Dataset Adapters")
+    table.add_column("Name")
+    table.add_column("Dataset")
+    for name in registry.names():
+        plugin = registry.get_dataset_adapter(name)
+        table.add_row(plugin.name, plugin.dataset_name)
+    console.print(table)
+
+
+@prepared_app.command("describe")
+def describe_prepared_adapter_cmd(
+    dataset: str = typer.Option(..., "--dataset"),
+) -> None:
+    """Describe the raw layout expected by one adapter."""
+    try:
+        plugin = default_dataset_adapter_registry().get_dataset_adapter(dataset)
+    except IndustrialTSADError as exc:
+        _fail(str(exc))
+    console.print(f"[bold]{plugin.dataset_name}[/bold] ({plugin.name})")
+    console.print(plugin.describe_expected_raw_layout())
+
+
+@prepared_app.command("prepare")
+def prepare_dataset_cmd(
+    dataset: str = typer.Option(..., "--dataset"),
+    raw: Path = typer.Option(..., "--raw", exists=True, file_okay=False),
+    out: Path = typer.Option(..., "--out"),
+    overwrite: bool = typer.Option(False, "--overwrite"),
+    extra_json: str = typer.Option("{}", "--extra-json"),
+    base_epoch_iso: str = typer.Option("2020-01-01T00:00:00Z", "--base-epoch-iso"),
+    default_period_ms: int = typer.Option(100, "--default-period-ms"),
+    strict: bool = typer.Option(True, "--strict/--no-strict"),
+) -> None:
+    """Prepare a local raw dataset into Prepared Format v1."""
+    try:
+        extra = _parse_json_object(extra_json)
+        result = PrepareDataset(
+            adapter_registry=default_dataset_adapter_registry(),
+            dataset=dataset,
+            raw=raw,
+            out=out,
+            overwrite=overwrite,
+            config=DatasetAdapterConfig(
+                base_epoch_iso=base_epoch_iso,
+                default_period_ms=default_period_ms,
+                strict=strict,
+                extra=extra,
+            ),
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print(f"[green]Prepared {result.dataset_name} with {result.run_count} runs[/green]")
+    console.print_json(json.dumps(result.to_dict(), sort_keys=True))
 
 
 @score_app.command("run")
@@ -149,9 +213,16 @@ def _print_validation_report(title: str, payload: dict[str, Any]) -> None:
                 console.print(f"- {value}")
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     console.print(f"[red]{message}[/red]")
     raise typer.Exit(1)
+
+
+def _parse_json_object(payload: str) -> dict[str, Any]:
+    parsed = json.loads(payload)
+    if not isinstance(parsed, dict):
+        raise ValueError("--extra-json must be a JSON object.")
+    return parsed
 
 
 if __name__ == "__main__":

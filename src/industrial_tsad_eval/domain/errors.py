@@ -15,5 +15,9 @@ class PluginNotFoundError(IndustrialTSADError):
     """Raised when a named plugin is not registered."""
 
 
+class PreparationError(IndustrialTSADError):
+    """Raised when raw-to-prepared dataset preparation fails."""
+
+
 class RepositoryError(IndustrialTSADError):
     """Raised when repository-backed artifacts cannot be read or written."""

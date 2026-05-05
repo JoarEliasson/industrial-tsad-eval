@@ -19,8 +19,30 @@ The default registry is built in `industrial_tsad_eval.plugins.registry`.
 Additional plugins should be registered by constructing a `DetectorRegistry` and
 calling `register(plugin)` before invoking application services.
 
-## Future Dataset Adapters
+## Dataset Adapter Plugins
 
-Dataset adapters should write Prepared Format v1 through repository or artifact
-writer abstractions. Adapter implementations may handle source-specific parsing,
-but their public output should remain the same prepared dataset contract.
+Dataset adapters convert local raw data into Prepared Format v1. A plugin
+provides:
+
+- stable `name`, such as `swat`
+- prepared `dataset_name`, such as `SWaT`
+- `describe_expected_raw_layout()`
+- `prepare(raw, prepared, config)`
+
+The `prepare` method writes to the exact prepared path supplied by the
+application service. It should use shared prepared writer helpers, avoid CLI
+libraries, and avoid deleting existing outputs. The `PrepareDataset` use case
+handles staging, validation, overwrite policy, and promotion.
+
+Built-in adapters:
+
+- `tep`: Tennessee Eastman Process CSV, MAT, or RData.
+- `swat`: SWaT CSV, parquet, or Excel.
+- `hai`: HAI CSV files with optional version directory selection.
+- `hai-cpps`: HAI-CPPS scenario directories with `sim_setup.json` enrichment.
+
+Optional raw readers are installed with:
+
+```powershell
+python -m pip install -e ".[datasets]"
+```
