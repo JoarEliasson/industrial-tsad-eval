@@ -33,11 +33,7 @@ def to_unix_ns(
     if pd.api.types.is_numeric_dtype(series):
         numeric = series.to_numpy(dtype=np.float64)
         max_value = float(np.nanmax(numeric)) if len(numeric) else 0.0
-        if (
-            max_value < 1e8
-            and assume_timestep_period_ns is not None
-            and base_ts_ns is not None
-        ):
+        if max_value < 1e8 and assume_timestep_period_ns is not None and base_ts_ns is not None:
             return base_ts_ns + numeric.astype(np.int64) * assume_timestep_period_ns
         if max_value > 1e17:
             return numeric.astype(np.int64)

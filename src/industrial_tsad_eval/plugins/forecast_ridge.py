@@ -56,10 +56,8 @@ class ForecastRidgeDetector:
 
         x_train = np.concatenate(x_all, axis=0)
         y_train = np.concatenate(y_all, axis=0)
-
         if self.scaler is not None:
             x_train = self.scaler.fit_transform(x_train)
-
         self.model.fit(x_train, y_train)
         self.is_fitted = True
 
@@ -76,14 +74,9 @@ class ForecastRidgeDetector:
 
         if self.scaler is not None:
             x_test = self.scaler.transform(x_test)
-
         y_pred = self.model.predict(x_test)
         residual_scores = np.mean((y_pred - y_test) ** 2, axis=1)
-        pad = np.full(
-            self.config.lags,
-            residual_scores[0] if len(residual_scores) > 0 else 0.0,
-            dtype=np.float64,
-        )
+        pad = np.full(self.config.lags, residual_scores[0], dtype=np.float64)
         point_scores = np.concatenate([pad, residual_scores.astype(np.float64)])
 
         window_count = (len(ts_ns) - self.config.window) // self.config.stride + 1
@@ -99,7 +92,6 @@ class ForecastRidgeDetector:
             end = start + self.config.window
             window_ends.append(int(ts_ns[end - 1]))
             scores.append(float(np.mean(point_scores[start:end])))
-
         return pd.DataFrame({"ts_ns": window_ends, "score": scores})
 
     def metadata(self) -> dict[str, Any]:
@@ -120,7 +112,6 @@ class ForecastRidgeDetector:
         row_count, feature_count = data.shape
         if row_count <= self.config.lags:
             return np.empty((0, feature_count * self.config.lags)), np.empty((0, feature_count))
-
         x_parts = [
             data[offset : row_count - self.config.lags + offset]
             for offset in range(self.config.lags)
@@ -160,7 +151,6 @@ def _feature_columns(repository: PreparedDatasetRepository) -> list[str]:
     ]
     if columns:
         return columns
-
     first_run = repository.run_ids()[0]
     frame = repository.read_run(first_run)
     return [str(column) for column in frame.columns if column != "ts_ns"]

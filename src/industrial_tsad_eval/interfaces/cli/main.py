@@ -1,4 +1,4 @@
-"""Command-line entrypoint for Industrial TSAD Eval."""
+"""Typer command-line interface for Industrial TSAD Eval."""
 
 from __future__ import annotations
 
@@ -10,12 +10,18 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from industrial_tsad_eval.application.benchmark import RunBenchmark
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.preparation import PrepareDataset
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
 from industrial_tsad_eval.domain.errors import IndustrialTSADError
+from industrial_tsad_eval.domain.policy import EvalPolicy
+from industrial_tsad_eval.infrastructure.benchmark_config import (
+    load_benchmark_config,
+    write_default_benchmark_config,
+)
 from industrial_tsad_eval.infrastructure.examples import make_opcua_fixture
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
@@ -23,75 +29,92 @@ from industrial_tsad_eval.plugins.registry import (
 )
 
 console = Console()
-app = typer.Typer(
-    help="Industrial time-series anomaly-detection evaluation toolkit.",
-    no_args_is_help=True,
-    rich_markup_mode="rich",
-)
-prepared_app = typer.Typer(help="Prepared Format v1 commands.", no_args_is_help=True)
-score_app = typer.Typer(help="Detector scoring commands.", no_args_is_help=True)
-scores_app = typer.Typer(help="Score Contract v1 commands.", no_args_is_help=True)
-eval_app = typer.Typer(help="Evaluation commands.", no_args_is_help=True)
-examples_app = typer.Typer(help="Example fixture commands.", no_args_is_help=True)
+
+app = typer.Typer(help="Industrial time-series anomaly detection evaluation toolkit.")
+prepared_app = typer.Typer(help="Prepared Format workflows.")
+score_app = typer.Typer(help="Detector scoring workflows.")
+scores_app = typer.Typer(help="Score Contract workflows.")
+eval_app = typer.Typer(help="Evaluation workflows.")
+examples_app = typer.Typer(help="Synthetic example fixture workflows.")
+bench_app = typer.Typer(help="Benchmark orchestration workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
 app.add_typer(scores_app, name="scores")
 app.add_typer(eval_app, name="eval")
 app.add_typer(examples_app, name="examples")
+app.add_typer(bench_app, name="bench")
 
 
 @prepared_app.command("validate")
-def validate_prepared_cmd(
-    prepared: Path = typer.Option(..., "--prepared", exists=True, file_okay=False),
+def validate_prepared(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
 ) -> None:
     """Validate a Prepared Format v1 dataset."""
-    report = ValidatePreparedDataset(prepared).run()
-    _print_validation_report("Prepared Dataset", report.to_dict())
-    if not report.ok:
-        raise typer.Exit(2)
+    _emit_validation(ValidatePreparedDataset(prepared).run().to_dict())
 
 
 @prepared_app.command("adapters")
-def list_prepared_adapters_cmd() -> None:
-    """List built-in dataset adapter plugins."""
+def list_adapters() -> None:
+    """List registered dataset adapter plugins."""
     registry = default_dataset_adapter_registry()
-    table = Table(title="Dataset Adapters")
-    table.add_column("Name")
-    table.add_column("Dataset")
+    table = Table("Name", "Dataset", "Expected Raw Layout")
     for name in registry.names():
         plugin = registry.get_dataset_adapter(name)
-        table.add_row(plugin.name, plugin.dataset_name)
+        table.add_row(plugin.name, plugin.dataset_name, plugin.describe_expected_raw_layout())
     console.print(table)
 
 
 @prepared_app.command("describe")
-def describe_prepared_adapter_cmd(
-    dataset: str = typer.Option(..., "--dataset"),
+def describe_adapter(
+    dataset: str = typer.Option(..., "--dataset", help="Dataset adapter name."),
 ) -> None:
-    """Describe the raw layout expected by one adapter."""
+    """Describe the local raw layout expected by a dataset adapter."""
     try:
         plugin = default_dataset_adapter_registry().get_dataset_adapter(dataset)
     except IndustrialTSADError as exc:
         _fail(str(exc))
-    console.print(f"[bold]{plugin.dataset_name}[/bold] ({plugin.name})")
-    console.print(plugin.describe_expected_raw_layout())
+    console.print_json(
+        data={
+            "name": plugin.name,
+            "dataset_name": plugin.dataset_name,
+            "expected_raw_layout": plugin.describe_expected_raw_layout(),
+        }
+    )
 
 
 @prepared_app.command("prepare")
-def prepare_dataset_cmd(
-    dataset: str = typer.Option(..., "--dataset"),
-    raw: Path = typer.Option(..., "--raw", exists=True, file_okay=False),
-    out: Path = typer.Option(..., "--out"),
-    overwrite: bool = typer.Option(False, "--overwrite"),
-    extra_json: str = typer.Option("{}", "--extra-json"),
-    base_epoch_iso: str = typer.Option("2020-01-01T00:00:00Z", "--base-epoch-iso"),
-    default_period_ms: int = typer.Option(100, "--default-period-ms"),
-    strict: bool = typer.Option(True, "--strict/--no-strict"),
+def prepare_dataset(
+    dataset: str = typer.Option(..., "--dataset", help="Dataset adapter name."),
+    raw: Path = typer.Option(..., "--raw", file_okay=False, help="Local raw dataset directory."),
+    out: Path = typer.Option(
+        ..., "--out", file_okay=False, help="Output directory for prepared datasets."
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Replace an existing prepared output."
+    ),
+    extra_json: str | None = typer.Option(
+        None, "--extra-json", help="Adapter-specific JSON options."
+    ),
+    base_epoch_iso: str = typer.Option(
+        "2020-01-01T00:00:00Z",
+        "--base-epoch-iso",
+        help="Base timestamp for raw data without timestamps.",
+    ),
+    default_period_ms: int = typer.Option(
+        100,
+        "--default-period-ms",
+        min=1,
+        help="Default sample period when raw data lacks timestamps.",
+    ),
+    strict: bool = typer.Option(
+        True, "--strict/--no-strict", help="Enable strict adapter behavior."
+    ),
 ) -> None:
-    """Prepare a local raw dataset into Prepared Format v1."""
+    """Prepare local raw data through a registered dataset adapter."""
     try:
-        extra = _parse_json_object(extra_json)
         result = PrepareDataset(
             adapter_registry=default_dataset_adapter_registry(),
             dataset=dataset,
@@ -102,37 +125,31 @@ def prepare_dataset_cmd(
                 base_epoch_iso=base_epoch_iso,
                 default_period_ms=default_period_ms,
                 strict=strict,
-                extra=extra,
+                extra=_json_object(extra_json),
             ),
         ).run()
-    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+    except (IndustrialTSADError, ValueError, FileNotFoundError) as exc:
         _fail(str(exc))
-    console.print(f"[green]Prepared {result.dataset_name} with {result.run_count} runs[/green]")
-    console.print_json(json.dumps(result.to_dict(), sort_keys=True))
+    console.print_json(data=result.to_dict())
 
 
 @score_app.command("run")
-def score_run_cmd(
-    prepared: Path = typer.Option(..., "--prepared", exists=True, file_okay=False),
-    detector: str = typer.Option("forecast-ridge", "--detector"),
-    out: Path = typer.Option(..., "--out"),
-    protocol: str = typer.Option("naive", "--protocol"),
-    window: int = typer.Option(128, "--window"),
-    stride: int = typer.Option(16, "--stride"),
-    alpha: float = typer.Option(1.0, "--alpha"),
-    lags: int = typer.Option(1, "--lags"),
-    standardize: bool = typer.Option(True, "--standardize/--no-standardize"),
-    seed: int = typer.Option(1337, "--seed"),
+def score_run(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    detector: str = typer.Option(..., "--detector", help="Detector plugin name."),
+    out: Path = typer.Option(
+        ..., "--out", file_okay=False, help="Output score artifact directory."
+    ),
+    protocol: str = typer.Option("naive", "--protocol", help="Split protocol to score."),
+    parameters_json: str | None = typer.Option(
+        None,
+        "--parameters-json",
+        help="Detector parameter JSON object.",
+    ),
 ) -> None:
-    """Train a detector plugin and write Score Contract v1 artifacts."""
-    parameters: dict[str, Any] = {
-        "window": window,
-        "stride": stride,
-        "alpha": alpha,
-        "lags": lags,
-        "standardize": standardize,
-        "seed": seed,
-    }
+    """Train a detector and write Score Contract v1 artifacts."""
     try:
         result = ScoreRuns(
             detector_registry=default_detector_registry(),
@@ -140,39 +157,45 @@ def score_run_cmd(
             scores=out,
             detector_name=detector,
             protocol=protocol,
-            detector_parameters=parameters,
+            detector_parameters=_json_object(parameters_json),
         ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
-    console.print(f"[green]Scored {len(result.runs_scored)} runs[/green]")
-    console.print_json(json.dumps(result.__dict__, sort_keys=True))
+    console.print_json(data=result.__dict__)
 
 
 @scores_app.command("validate")
-def validate_scores_cmd(
-    prepared: Path = typer.Option(..., "--prepared", exists=True, file_okay=False),
-    scores: Path = typer.Option(..., "--scores", exists=True, file_okay=False),
+def validate_scores(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    scores: Path = typer.Option(..., "--scores", file_okay=False, help="Score artifact directory."),
 ) -> None:
-    """Validate Score Contract v1 artifacts against a prepared dataset."""
-    report = ValidateScores(prepared, scores).run()
-    _print_validation_report("Scores", report.to_dict())
-    if not report.ok:
-        raise typer.Exit(2)
+    """Validate Score Contract v1 artifacts."""
+    _emit_validation(ValidateScores(prepared, scores).run().to_dict())
 
 
 @eval_app.command("run")
-def eval_run_cmd(
-    prepared: Path = typer.Option(..., "--prepared", exists=True, file_okay=False),
-    scores: Path = typer.Option(..., "--scores", exists=True, file_okay=False),
-    out: Path = typer.Option(..., "--out"),
-    protocol: str = typer.Option("naive", "--protocol"),
-    threshold: float | None = typer.Option(None, "--threshold"),
-    threshold_quantile: float = typer.Option(0.995, "--threshold-quantile"),
+def eval_run(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    scores: Path = typer.Option(..., "--scores", file_okay=False, help="Score artifact directory."),
+    out: Path = typer.Option(
+        ..., "--out", file_okay=False, help="Output evaluation artifact directory."
+    ),
+    protocol: str = typer.Option("naive", "--protocol", help="Split protocol to evaluate."),
+    threshold: float | None = typer.Option(None, "--threshold", help="Manual score threshold."),
+    threshold_quantile: float = typer.Option(
+        0.995,
+        "--threshold-quantile",
+        min=0.0,
+        max=1.0,
+        help="Calibration quantile when no manual threshold is provided.",
+    ),
 ) -> None:
-    """Evaluate score artifacts and write metrics."""
+    """Evaluate scores against prepared event labels."""
     try:
-        from industrial_tsad_eval.domain.policy import EvalPolicy
-
         result = EvaluateScores(
             prepared=prepared,
             scores=scores,
@@ -183,47 +206,114 @@ def eval_run_cmd(
         ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
-    console.print(f"[green]Evaluation written to {result.out_dir}[/green]")
-    console.print_json(json.dumps(result.metrics, sort_keys=True))
+    console.print_json(data=result.__dict__)
 
 
 @examples_app.command("make-opcua-fixture")
-def make_fixture_cmd(
-    out: Path = typer.Option(..., "--out"),
+def make_fixture(
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Output directory."),
 ) -> None:
-    """Generate a small OPC-UA-like Prepared Format v1 fixture."""
-    dataset_root = make_opcua_fixture(out)
-    console.print(f"[green]Prepared fixture written to {dataset_root}[/green]")
+    """Generate a small OPC-UA-like Prepared Format fixture."""
+    try:
+        path = make_opcua_fixture(out)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data={"prepared": str(path)})
 
 
-def _print_validation_report(title: str, payload: dict[str, Any]) -> None:
-    table = Table(title=title, show_lines=True)
-    table.add_column("Field")
-    table.add_column("Value")
-    table.add_row("Path", str(payload["path"]))
-    table.add_row("OK", str(payload["ok"]))
-    table.add_row("Errors", str(len(payload["errors"])))
-    table.add_row("Warnings", str(len(payload["warnings"])))
-    console.print(table)
-    for label in ("errors", "warnings"):
-        values = payload[label]
-        if values:
-            console.print(f"[bold]{label.title()}[/bold]")
-            for value in values:
-                console.print(f"- {value}")
+@bench_app.command("init-config")
+def bench_init_config(
+    out: Path = typer.Option(..., "--out", dir_okay=False, help="TOML file to create."),
+) -> None:
+    """Write a starter benchmark TOML config."""
+    try:
+        path = write_default_benchmark_config(out)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data={"config": str(path)})
+
+
+@bench_app.command("plan")
+def bench_plan(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="Benchmark TOML config."),
+) -> None:
+    """Print the resolved benchmark matrix without running it."""
+    try:
+        loaded = load_benchmark_config(config)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(
+        data={
+            "benchmark": loaded.name,
+            "experiment_count": len(loaded.experiments()),
+            "experiments": [
+                {
+                    "experiment_id": experiment.experiment_id,
+                    "dataset": experiment.dataset.id,
+                    "detector": experiment.detector.id,
+                    "protocol": experiment.protocol,
+                }
+                for experiment in loaded.experiments()
+            ],
+        }
+    )
+
+
+@bench_app.command("run")
+def bench_run(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="Benchmark TOML config."),
+    out: Path = typer.Option(
+        ..., "--out", file_okay=False, help="Benchmark runs output directory."
+    ),
+    run_id: str | None = typer.Option(None, "--run-id", help="Optional run id override."),
+) -> None:
+    """Run the benchmark matrix and write structured run artifacts."""
+    try:
+        loaded = load_benchmark_config(config)
+        result = RunBenchmark(
+            config=loaded,
+            detector_registry=default_detector_registry(),
+            out=out,
+            run_id=run_id,
+            source_config=config,
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+    if not result.ok:
+        raise typer.Exit(1)
+
+
+@bench_app.command("summarize")
+def bench_summarize(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="Benchmark run directory."),
+) -> None:
+    """Print benchmark summary rows from a completed run directory."""
+    summary_path = run / "summary.json"
+    if not summary_path.exists():
+        _fail(f"Missing benchmark summary: {summary_path}")
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    experiments = payload.get("experiments", [])
+    console.print_json(
+        data={"run": str(run), "experiments": experiments if isinstance(experiments, list) else []}
+    )
+
+
+def _emit_validation(report: dict[str, Any]) -> None:
+    console.print_json(data=report)
+    if not bool(report.get("ok")):
+        raise typer.Exit(1)
+
+
+def _json_object(value: str | None) -> dict[str, Any]:
+    if value is None or not value.strip():
+        return {}
+    payload = json.loads(value)
+    if not isinstance(payload, dict):
+        raise ValueError("JSON value must be an object.")
+    return payload
 
 
 def _fail(message: str) -> NoReturn:
     console.print(f"[red]{message}[/red]")
     raise typer.Exit(1)
-
-
-def _parse_json_object(payload: str) -> dict[str, Any]:
-    parsed = json.loads(payload)
-    if not isinstance(parsed, dict):
-        raise ValueError("--extra-json must be a JSON object.")
-    return parsed
-
-
-if __name__ == "__main__":
-    app()

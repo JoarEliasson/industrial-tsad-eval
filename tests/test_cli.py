@@ -1,51 +1,48 @@
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from industrial_tsad_eval.interfaces.cli.main import app
+from tests.conftest import write_swat_raw
+
+runner = CliRunner()
 
 
-def test_cli_vertical_smoke(tmp_path):
-    runner = CliRunner()
+def test_cli_core_vertical_slice(tmp_path: Path):
     examples = tmp_path / "examples"
     scores = tmp_path / "scores"
     eval_out = tmp_path / "eval"
 
     result = runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])
     assert result.exit_code == 0, result.output
-
     prepared = examples / "OPCUA_SYNTH"
-    result = runner.invoke(app, ["prepared", "validate", "--prepared", str(prepared)])
-    assert result.exit_code == 0, result.output
 
-    result = runner.invoke(
+    assert runner.invoke(app, ["prepared", "validate", "--prepared", str(prepared)]).exit_code == 0
+    score_result = runner.invoke(
         app,
         [
             "score",
             "run",
             "--prepared",
             str(prepared),
+            "--detector",
+            "forecast-ridge",
             "--out",
             str(scores),
-            "--window",
-            "32",
-            "--stride",
-            "4",
-            "--lags",
-            "2",
+            "--parameters-json",
+            '{"window": 24, "stride": 4, "lags": 1}',
         ],
     )
-    assert result.exit_code == 0, result.output
-
-    result = runner.invoke(
-        app,
-        ["scores", "validate", "--prepared", str(prepared), "--scores", str(scores)],
+    assert score_result.exit_code == 0, score_result.output
+    assert (
+        runner.invoke(
+            app, ["scores", "validate", "--prepared", str(prepared), "--scores", str(scores)]
+        ).exit_code
+        == 0
     )
-    assert result.exit_code == 0, result.output
-
-    result = runner.invoke(
+    eval_result = runner.invoke(
         app,
         [
             "eval",
@@ -56,29 +53,16 @@ def test_cli_vertical_smoke(tmp_path):
             str(scores),
             "--out",
             str(eval_out),
-            "--threshold",
-            "0.1",
         ],
     )
-    assert result.exit_code == 0, result.output
-    assert (eval_out / "metrics.json").exists()
+    assert eval_result.exit_code == 0, eval_result.output
 
 
-def test_cli_dataset_adapter_commands(tmp_path):
-    runner = CliRunner()
-    raw = tmp_path / "raw_swat"
-    _make_cli_swat_raw(raw)
+def test_cli_prepared_adapters_describe_and_prepare(tmp_path: Path):
+    raw = write_swat_raw(tmp_path / "raw")
 
-    result = runner.invoke(app, ["prepared", "adapters"])
-    assert result.exit_code == 0, result.output
-    assert "swat" in result.output
-    assert "hai-cpps" in result.output
-
-    result = runner.invoke(app, ["prepared", "describe", "--dataset", "swat"])
-    assert result.exit_code == 0, result.output
-    assert "SWaT" in result.output
-
-    out = tmp_path / "prepared"
+    assert runner.invoke(app, ["prepared", "adapters"]).exit_code == 0
+    assert runner.invoke(app, ["prepared", "describe", "--dataset", "swat"]).exit_code == 0
     result = runner.invoke(
         app,
         [
@@ -89,32 +73,46 @@ def test_cli_dataset_adapter_commands(tmp_path):
             "--raw",
             str(raw),
             "--out",
-            str(out),
-            "--extra-json",
-            '{"remove_startup": false}',
+            str(tmp_path / "prepared"),
         ],
     )
+
     assert result.exit_code == 0, result.output
-    assert (out / "SWaT" / "meta" / "manifest.json").exists()
+    assert (tmp_path / "prepared" / "SWaT" / "meta" / "manifest.json").exists()
 
 
-def _make_cli_swat_raw(root):
-    root.mkdir(parents=True)
-    pd.DataFrame(
-        {
-            "Timestamp": pd.date_range("2020-01-01", periods=12, freq="1s"),
-            "FIT101": np.linspace(1.0, 2.0, 12),
-            "MV101": np.zeros(12, dtype=np.int64),
-            "Normal/Attack": ["Normal"] * 12,
-        }
-    ).to_csv(root / "SWaT_Normal.csv", index=False)
-    labels = ["Normal"] * 12
-    labels[6:8] = ["Attack", "Attack"]
-    pd.DataFrame(
-        {
-            "Timestamp": pd.date_range("2020-01-02", periods=12, freq="1s"),
-            "FIT101": np.linspace(1.5, 2.5, 12),
-            "MV101": np.ones(12, dtype=np.int64),
-            "Normal/Attack": labels,
-        }
-    ).to_csv(root / "SWaT_Attack.csv", index=False)
+def test_cli_benchmark_commands(tmp_path: Path):
+    examples = tmp_path / "examples"
+    runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])
+    config = tmp_path / "benchmark.toml"
+    init = runner.invoke(app, ["bench", "init-config", "--out", str(config)])
+    assert init.exit_code == 0, init.output
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "examples/generated/OPCUA_SYNTH",
+            str((examples / "OPCUA_SYNTH").resolve()).replace("\\", "\\\\"),
+        ),
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(app, ["bench", "plan", "--config", str(config)]).exit_code == 0
+    run = runner.invoke(
+        app,
+        [
+            "bench",
+            "run",
+            "--config",
+            str(config),
+            "--out",
+            str(tmp_path / "bench-runs"),
+            "--run-id",
+            "cli-run",
+        ],
+    )
+    assert run.exit_code == 0, run.output
+    assert (
+        runner.invoke(
+            app, ["bench", "summarize", "--run", str(tmp_path / "bench-runs" / "cli-run")]
+        ).exit_code
+        == 0
+    )

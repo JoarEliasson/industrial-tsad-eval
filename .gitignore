@@ -1,18 +1,14 @@
-# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
-dist/
-.venv/
 
-# Tool caches
 .mypy_cache/
 .pytest_cache/
 .pytest_tmp/
+.pip-tmp/
+.test-output/
 .ruff_cache/
-.coverage
-htmlcov/
+tmp_check_py/
 
 .venv/
 venv/
@@ -24,11 +20,3 @@ out/
 examples/generated/
 prepared/
 scores/
-
-# Local environment
-.env
-.env.*
-!.env.example
-
-# IDE
-.idea

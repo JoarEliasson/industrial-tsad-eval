@@ -33,7 +33,10 @@ class LocalScoreRepository:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError(f"Score manifest must be an object: {manifest_path}")
-            return {str(run_id): self._root / str(relative_path) for run_id, relative_path in payload.items()}
+            return {
+                str(run_id): self._root / str(relative_path)
+                for run_id, relative_path in payload.items()
+            }
 
         return {
             path.stem.replace("__", "/"): path

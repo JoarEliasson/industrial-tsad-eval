@@ -130,14 +130,20 @@ def _validate_run_frame(
 
     data_columns = {str(column) for column in frame.columns if column != "ts_ns"}
     for column in data_columns:
-        if pd.api.types.is_string_dtype(frame[column]) or pd.api.types.is_object_dtype(frame[column]):
-            errors.append(f"Run {run_id}: column {column} is non-numeric dtype {frame[column].dtype}")
+        if pd.api.types.is_string_dtype(frame[column]) or pd.api.types.is_object_dtype(
+            frame[column]
+        ):
+            errors.append(
+                f"Run {run_id}: column {column} is non-numeric dtype {frame[column].dtype}"
+            )
 
     if schema_tags:
         missing_from_schema = sorted(data_columns - schema_tags)
         missing_from_run = sorted(schema_tags - data_columns)
         if missing_from_schema:
-            errors.append(f"Run {run_id}: columns not present in schema.json: {missing_from_schema[:10]}")
+            errors.append(
+                f"Run {run_id}: columns not present in schema.json: {missing_from_schema[:10]}"
+            )
         if missing_from_run:
             warnings.append(f"Run {run_id}: schema tags missing from run: {missing_from_run[:10]}")
 
