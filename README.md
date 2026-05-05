@@ -93,12 +93,28 @@ itse operator card generate --prepared examples/generated/OPCUA_SYNTH --evidence
 itse operator card validate --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --cards out/operator-cards
 ```
 
+Thesis-style reproducibility keeps benchmark, evidence, XAI, profiling, and RQ3
+assistant experiments behind clean application services:
+
+```powershell
+itse reproduce init-config --out config/thesis_smoke.toml --profile thesis-smoke
+itse reproduce plan --config config/thesis_smoke.toml
+itse reproduce run --config config/thesis_smoke.toml --out out/reproduction --run-id smoke
+
+itse rq3 providers
+itse rq3 preflight --config config/thesis_smoke.toml
+```
+
+For full RQ3 thesis runs, `llama.cpp` is the recommended local reproducibility
+backend through its OpenAI-compatible server. Cloud providers are configured via
+environment-variable names only; secrets are never written to config files.
+
 ## Architecture
 
 The package uses a hexagonal structure:
 
 - `domain`: contracts, events, policies, validation reports, metric functions.
-- `ports`: dataset adapter, detector, repository, and artifact writer interfaces.
+- `ports`: dataset adapter, detector, LLM provider, repository, and artifact writer interfaces.
 - `application`: use cases such as prepare, validate, score, evaluate, and benchmark.
 - `infrastructure`: local parquet/json repositories, prepared writers, and fixtures.
 - `plugins`: dataset source, dataset adapter, and detector implementations.
@@ -136,6 +152,8 @@ method, warnings, and a SHA256 inventory of imported files.
 
 Operator cards use `operator-card-v1` JSON plus Markdown views. They are
 deterministic and cite Evidence Bundle v1 or local Markdown playbook chunks.
+RQ3 replay suites use provider-backed assistant runs and deterministic referee
+checks to produce thesis-compatible claim/citation metrics.
 
 Benchmark runs create:
 
@@ -153,7 +171,9 @@ See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisiti
 [docs/plugins.md](docs/plugins.md), [docs/benchmarks.md](docs/benchmarks.md),
 [docs/system.md](docs/system.md), [docs/profiling.md](docs/profiling.md),
 [docs/evidence.md](docs/evidence.md), [docs/xai.md](docs/xai.md), and
-[docs/operator.md](docs/operator.md) for details.
+[docs/operator.md](docs/operator.md), [docs/providers.md](docs/providers.md),
+[docs/rq3.md](docs/rq3.md), [docs/reproduction.md](docs/reproduction.md), and
+[docs/thesis_crosswalk.md](docs/thesis_crosswalk.md) for details.
 
 ## Development
 

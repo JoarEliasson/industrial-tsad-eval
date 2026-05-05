@@ -1,0 +1,8 @@
+[rq3.provider]
+name = "llama-cpp"
+model = "local-llama"
+base_url = "http://127.0.0.1:8080/v1"
+temperature = 0.0
+top_p = 1.0
+max_tokens = 700
+seed = 1337

@@ -128,6 +128,25 @@ def test_operator_assistant_has_no_provider_or_network_dependencies():
     assert offenders == []
 
 
+def test_provider_sdk_imports_are_not_eager_dependencies():
+    offenders: list[str] = []
+    forbidden = {"openai", "anthropic", "google", "xai"}
+    for path in _python_files():
+        relative = str(path.relative_to(SRC_ROOT)).replace("\\", "/")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = {node.module.split(".")[0]}
+            else:
+                continue
+            if names & forbidden:
+                offenders.append(relative)
+
+    assert offenders == []
+
+
 def test_dataset_sources_do_not_directly_delete_output_trees():
     sources_root = SRC_ROOT / "plugins" / "sources"
     offenders = [

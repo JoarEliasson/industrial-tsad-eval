@@ -2,10 +2,9 @@
 
 Plugins extend the toolkit without changing application workflows.
 
-Operator cards are not plugins in this slice. They are deterministic
-application services over Evidence Bundle v1 and optional local Markdown
-playbooks. Future LLM or detector-native explanation extensions should use new
-ports rather than changing the card contract.
+Operator cards are not plugins. They are deterministic application services
+over Evidence Bundle v1 and optional local Markdown playbooks. Thesis RQ3
+assistant replay uses provider plugins behind the `LLMProvider` port.
 
 ## Dataset Source Plugins
 
@@ -114,3 +113,22 @@ Optional raw readers are installed with:
 ```powershell
 python -m pip install -e ".[datasets]"
 ```
+
+## LLM Provider Plugins
+
+Provider plugins serve RQ3 assistant replay. A plugin provides:
+
+- stable `name`, such as `llama-cpp`
+- provider metadata for `itse rq3 providers`
+- `default_config()`
+- `create(config)` returning an `LLMProvider`
+
+Built-in providers:
+
+- `llama-cpp`: local OpenAI-compatible llama.cpp server.
+- `openai-compatible`: generic local/cloud OpenAI-compatible endpoint.
+- `openai`, `anthropic`, `google`, `xai`: cloud provider config shapes.
+- `fake`: deterministic provider for CI and smoke tests.
+
+Provider secrets are read from environment variables named in config. They are
+not stored in TOML or artifacts.

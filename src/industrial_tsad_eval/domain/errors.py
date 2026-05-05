@@ -57,3 +57,15 @@ class XAIEvaluationError(IndustrialTSADError):
 
 class OperatorAssistantError(IndustrialTSADError):
     """Raised when deterministic operator-assistant workflows fail."""
+
+
+class ProviderConfigError(IndustrialTSADError):
+    """Raised when an LLM provider configuration is invalid."""
+
+
+class RQ3RunError(IndustrialTSADError):
+    """Raised when an RQ3 replay suite cannot complete."""
+
+
+class ReproductionError(IndustrialTSADError):
+    """Raised when a thesis-style reproduction run cannot complete."""

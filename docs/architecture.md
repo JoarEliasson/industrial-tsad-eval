@@ -9,7 +9,7 @@ independent from command-line rendering and filesystem details.
 - `ports` defines the interfaces that application services depend on.
 - `application` coordinates use cases and owns workflow-level decisions.
 - `infrastructure` implements local repositories and artifact writers.
-- `plugins` provides dataset source, dataset adapter, and detector implementations.
+- `plugins` provides dataset source, dataset adapter, detector, and provider implementations.
 - `interfaces/cli` is the only layer that imports Typer or Rich.
 
 ## Dependency Rules
@@ -93,3 +93,25 @@ and Markdown cards with citations.
 
 This slice has no LLM provider, network, replay-suite, or referee dependency.
 It is an application workflow, not a detector or dataset plugin.
+
+## RQ3 And Reproduction Slice
+
+The RQ3 harness is the thesis-compatible assistant experiment. It depends on
+ports for provider-backed generation, evidence retrieval, replay-suite storage,
+assistant run artifacts, and metric writing. `llama.cpp` is the recommended
+local reproducibility provider, while cloud providers are configured through the
+same `LLMProvider` port.
+
+```mermaid
+flowchart LR
+  A["Benchmark outputs"] --> B["Evidence Bundle v1"]
+  B --> C["BuildReplaySuite"]
+  C --> D["Retrieve evidence"]
+  D --> E["LLMProvider"]
+  E --> F["Claim/referee metrics"]
+  F --> G["RQ3 summary"]
+```
+
+`RunThesisReproduction` composes benchmark, evidence, XAI, optional profiling,
+and RQ3 stages in process. It writes a crosswalk that maps thesis-era artifacts
+to the productized contracts without importing old thesis modules.

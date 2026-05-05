@@ -35,6 +35,13 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluate,
     ProfileScoreEvaluateConfig,
 )
+from industrial_tsad_eval.application.reproduction import (
+    PlanThesisReproduction,
+    PreflightThesisReproduction,
+    RunThesisReproduction,
+    SummarizeThesisReproduction,
+)
+from industrial_tsad_eval.application.rq3 import PreflightRQ3, RunReplaySuite, SummarizeRQ3
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
@@ -48,12 +55,19 @@ from industrial_tsad_eval.infrastructure.benchmark_config import (
 )
 from industrial_tsad_eval.infrastructure.examples import make_opcua_fixture
 from industrial_tsad_eval.infrastructure.json_utils import write_json
+from industrial_tsad_eval.infrastructure.reproduction_config import (
+    load_reproduction_config,
+    load_rq3_config,
+    write_default_reproduction_config,
+    write_provider_config_template,
+)
 from industrial_tsad_eval.infrastructure.system import (
     capture_machine_environment,
     detect_system_gpus,
     probe_torch_runtime,
     recommend_backend_for_gpus,
 )
+from industrial_tsad_eval.plugins.providers import default_llm_provider_registry
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
     default_dataset_source_registry,
@@ -77,6 +91,8 @@ xai_gt_map_app = typer.Typer(help="Ground-truth tag-map workflows.")
 data_app = typer.Typer(help="Raw dataset acquisition workflows.")
 operator_app = typer.Typer(help="Deterministic operator-assistant workflows.")
 operator_card_app = typer.Typer(help="Operator card workflows.")
+rq3_app = typer.Typer(help="Thesis RQ3 assistant replay workflows.")
+reproduce_app = typer.Typer(help="Thesis-style reproduction workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
@@ -90,6 +106,8 @@ app.add_typer(evidence_app, name="evidence")
 app.add_typer(xai_app, name="xai")
 app.add_typer(data_app, name="data")
 app.add_typer(operator_app, name="operator")
+app.add_typer(rq3_app, name="rq3")
+app.add_typer(reproduce_app, name="reproduce")
 xai_app.add_typer(xai_gt_map_app, name="gt-map")
 operator_app.add_typer(operator_card_app, name="card")
 
@@ -726,6 +744,174 @@ def xai_eval(
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.to_dict())
+
+
+@rq3_app.command("providers")
+def rq3_providers() -> None:
+    """List registered RQ3 LLM provider plugins."""
+    registry = default_llm_provider_registry()
+    table = Table("Name", "Family", "Default Model", "Base URL", "API Key", "Description")
+    for name in registry.names():
+        description = registry.get(name).describe()
+        table.add_row(
+            description.name,
+            description.family,
+            description.default_model,
+            description.default_base_url or "-",
+            "required" if description.requires_api_key else "not required",
+            description.description,
+        )
+    console.print(table)
+
+
+@rq3_app.command("provider-template")
+def rq3_provider_template(
+    out: Path = typer.Option(..., "--out", dir_okay=False, help="Provider TOML snippet file."),
+) -> None:
+    """Write provider configuration examples."""
+    try:
+        path = write_provider_config_template(out)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data={"out": str(path)})
+
+
+@rq3_app.command("preflight")
+def rq3_preflight(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="RQ3 TOML config."),
+) -> None:
+    """Preflight an RQ3 config and provider."""
+    try:
+        loaded = load_rq3_config(config)
+        result = PreflightRQ3(
+            config=loaded,
+            provider_registry=default_llm_provider_registry(),
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+    if not result.ok:
+        raise typer.Exit(1)
+
+
+@rq3_app.command("run")
+def rq3_run(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="RQ3 TOML config."),
+    benchmark: Path = typer.Option(..., "--benchmark", file_okay=False, help="Benchmark run dir."),
+    evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence Bundle dir."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="RQ3 output dir."),
+) -> None:
+    """Run a thesis-style RQ3 replay suite."""
+    try:
+        loaded = load_rq3_config(config)
+        result = RunReplaySuite(
+            config=loaded,
+            evidence=evidence,
+            out=out,
+            provider_registry=default_llm_provider_registry(),
+            benchmark=benchmark,
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+    if not result.ok:
+        raise typer.Exit(1)
+
+
+@rq3_app.command("summarize")
+def rq3_summarize(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="RQ3 run directory."),
+) -> None:
+    """Print an RQ3 summary."""
+    try:
+        payload = SummarizeRQ3(run).run_summary()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=payload)
+
+
+@reproduce_app.command("init-config")
+def reproduce_init_config(
+    out: Path = typer.Option(..., "--out", dir_okay=False, help="Reproduction TOML file."),
+    profile: str = typer.Option(
+        "thesis-smoke", "--profile", help="Config profile: thesis-smoke or thesis-full."
+    ),
+) -> None:
+    """Write a starter thesis reproduction config."""
+    try:
+        path = write_default_reproduction_config(out, profile=profile)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data={"config": str(path)})
+
+
+@reproduce_app.command("plan")
+def reproduce_plan(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="Reproduction TOML config."),
+) -> None:
+    """Print the resolved reproduction plan."""
+    try:
+        loaded = load_reproduction_config(config)
+        plan = PlanThesisReproduction(loaded).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=plan.to_dict())
+
+
+@reproduce_app.command("preflight")
+def reproduce_preflight(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="Reproduction TOML config."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Preflight output directory."),
+) -> None:
+    """Run thesis reproduction preflight checks."""
+    try:
+        loaded = load_reproduction_config(config)
+        result = PreflightThesisReproduction(
+            config=loaded,
+            provider_registry=default_llm_provider_registry(),
+        ).run()
+        write_json(out / "preflight.json", result)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result)
+    if not bool(result.get("ok")):
+        raise typer.Exit(1)
+
+
+@reproduce_app.command("run")
+def reproduce_run(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="Reproduction TOML config."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Reproduction output root."),
+    run_id: str | None = typer.Option(None, "--run-id", help="Optional run id override."),
+) -> None:
+    """Run a thesis-style reproduction workflow."""
+    try:
+        loaded = load_reproduction_config(config)
+        result = RunThesisReproduction(
+            config=loaded,
+            detector_registry=default_detector_registry(),
+            provider_registry=default_llm_provider_registry(),
+            out=out,
+            run_id=run_id,
+            source_config=config,
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+    if not result.ok:
+        raise typer.Exit(1)
+
+
+@reproduce_app.command("summarize")
+def reproduce_summarize(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="Reproduction run directory."),
+) -> None:
+    """Print a thesis reproduction summary."""
+    try:
+        payload = SummarizeThesisReproduction(run).run_summary()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=payload)
 
 
 def _emit_validation(report: dict[str, Any]) -> None:
