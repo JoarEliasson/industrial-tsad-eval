@@ -72,7 +72,12 @@ def make_opcua_fixture(out: str | Path) -> Path:
                 "train_runs": ["opcua/train/normal_001"],
                 "val_runs": ["opcua/val/normal_001"],
                 "test_runs": ["opcua/test/fault_001"],
-            }
+            },
+            "all_in_one": {
+                "train_runs": ["opcua/train/normal_001"],
+                "val_runs": ["opcua/val/normal_001"],
+                "test_runs": ["opcua/test/fault_001"],
+            },
         },
     )
     write_json(

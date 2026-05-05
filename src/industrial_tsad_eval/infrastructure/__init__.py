@@ -1,1 +1,3 @@
-"""Infrastructure adapters for local artifacts."""
+"""Infrastructure adapters."""
+
+from __future__ import annotations

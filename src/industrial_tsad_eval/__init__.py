@@ -1,5 +1,5 @@
-"""Industrial TSAD evaluation toolkit."""
+"""Industrial TSAD Eval package."""
 
-from industrial_tsad_eval.plugins.registry import default_detector_registry
+from __future__ import annotations
 
-__all__ = ["default_detector_registry"]
+__version__ = "0.1.0"

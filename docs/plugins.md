@@ -13,12 +13,6 @@ A detector plugin provides:
 The detector reads data through a `PreparedDatasetRepository` port and returns
 Score Contract v1 rows as a dataframe. It does not write files directly.
 
-## Registration
-
-The default registry is built in `industrial_tsad_eval.plugins.registry`.
-Additional plugins should be registered by constructing a `DetectorRegistry` and
-calling `register(plugin)` before invoking application services.
-
 ## Dataset Adapter Plugins
 
 Dataset adapters convert local raw data into Prepared Format v1. A plugin

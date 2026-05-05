@@ -19,5 +19,13 @@ class PreparationError(IndustrialTSADError):
     """Raised when raw-to-prepared dataset preparation fails."""
 
 
+class BenchmarkConfigError(IndustrialTSADError):
+    """Raised when a benchmark configuration is invalid."""
+
+
+class BenchmarkRunError(IndustrialTSADError):
+    """Raised when a benchmark run cannot be created or completed."""
+
+
 class RepositoryError(IndustrialTSADError):
     """Raised when repository-backed artifacts cannot be read or written."""

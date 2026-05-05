@@ -1,1 +1,3 @@
-"""Port interfaces for the hexagonal application boundary."""
+"""Ports used by application services."""
+
+from __future__ import annotations

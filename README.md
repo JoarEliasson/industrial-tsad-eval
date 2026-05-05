@@ -33,11 +33,15 @@ itse prepared prepare --dataset swat --raw data/raw/SWaT --out prepared --extra-
 itse prepared validate --prepared prepared/SWaT
 ```
 
-The final command writes:
+Repeatable benchmark runs use TOML configs and existing Prepared Format
+directories:
 
-- `metrics.json`
-- `event_matches.json`
-- `threshold.json`
+```powershell
+itse bench init-config --out benchmarks/opcua.toml
+itse bench plan --config benchmarks/opcua.toml
+itse bench run --config benchmarks/opcua.toml --out out/benchmarks
+itse bench summarize --run out/benchmarks/opcua-smoke-<timestamp>
+```
 
 ## Architecture
 
@@ -45,36 +49,14 @@ The package uses a hexagonal structure:
 
 - `domain`: contracts, events, policies, validation reports, metric functions.
 - `ports`: dataset adapter, detector, repository, and artifact writer interfaces.
-- `application`: use cases such as prepare, validate, score, and evaluate.
-- `infrastructure`: local parquet/json repositories, prepared writers, and fixture generation.
+- `application`: use cases such as prepare, validate, score, evaluate, and benchmark.
+- `infrastructure`: local parquet/json repositories, prepared writers, and fixtures.
 - `plugins`: dataset adapter and detector implementations plus registry wiring.
 - `interfaces/cli`: Typer/Rich command-line interface.
 
 Core code does not import CLI/UI libraries. Workflows are exposed as application
 services, while the CLI only parses arguments, calls a service, and renders
 results.
-
-## Plugin Model
-
-Detector plugins implement a small factory interface:
-
-- stable `name`
-- `create(config)`
-- returned detector with `train`, `score_run`, and `metadata`
-
-The first plugin is `forecast-ridge`. Additional detectors can be registered
-without changing application or CLI workflows.
-
-Dataset adapter plugins implement:
-
-- stable `name`
-- `dataset_name` for the prepared output directory
-- `describe_expected_raw_layout()`
-- `prepare(raw, prepared, config)`
-
-The built-in adapters are `tep`, `swat`, `hai`, and `hai-cpps`. Users provide
-local raw data paths; dataset acquisition and credentials are intentionally out
-of scope for this package.
 
 ## Data Contracts
 
@@ -95,7 +77,20 @@ Score Contract v1 expects one parquet per run with at least:
 - `ts_ns`: numeric timestamp in nanoseconds
 - `score`: numeric anomaly score where higher means more anomalous
 
-See [docs/contracts.md](docs/contracts.md) for details.
+Benchmark runs create:
+
+```text
+<out>/<run_id>/
+  config/benchmark.toml
+  resolved_config.json
+  run_manifest.json
+  summary.json
+  summary.csv
+  experiments/<experiment_id>/
+```
+
+See [docs/contracts.md](docs/contracts.md), [docs/plugins.md](docs/plugins.md),
+and [docs/benchmarks.md](docs/benchmarks.md) for details.
 
 ## Development
 

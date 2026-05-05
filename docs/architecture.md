@@ -38,22 +38,12 @@ flowchart LR
 The adapter owns source-specific parsing. The application service owns plugin
 lookup, staging, overwrite policy, validation, and promotion.
 
-## First Vertical Slice
+## Benchmark Slice
 
-The first slice supports:
+Benchmark orchestration is in-process. `RunBenchmark` loads a resolved TOML
+config, expands datasets x detectors x protocols, validates prepared datasets,
+then calls the existing scoring and evaluation use cases.
 
-1. Generate a synthetic OPC-UA-like Prepared Format dataset.
-2. Validate the prepared dataset.
-3. Train and run the ForecastRidge detector plugin.
-4. Validate Score Contract artifacts.
-5. Evaluate event-level metrics and write JSON artifacts.
-
-This creates a small but complete path that later dataset and detector plugins
-can reuse without changing the application layer.
-
-## Dataset Adapter Slice
-
-The second slice adds local raw-data adapters for TEP, SWaT, HAI, and HAI-CPPS.
-All adapters produce the same Prepared Format v1 contract and are invoked
-through `PrepareDataset`, not directly from the CLI. Optional readers for MAT,
-RData, and Excel files are isolated behind the `datasets` extra.
+Benchmark runs consume Prepared Format directories only. Raw-data preparation
+stays explicit through `itse prepared prepare`, which keeps benchmark runs
+repeatable and avoids hidden data mutation.

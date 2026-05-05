@@ -33,7 +33,11 @@ def to_unix_ns(
     if pd.api.types.is_numeric_dtype(series):
         numeric = series.to_numpy(dtype=np.float64)
         max_value = float(np.nanmax(numeric)) if len(numeric) else 0.0
-        if max_value < 1e8 and assume_timestep_period_ns is not None and base_ts_ns is not None:
+        if (
+            max_value < 1e8
+            and assume_timestep_period_ns is not None
+            and base_ts_ns is not None
+        ):
             return base_ts_ns + numeric.astype(np.int64) * assume_timestep_period_ns
         if max_value > 1e17:
             return numeric.astype(np.int64)
@@ -89,16 +93,7 @@ def binary_labels_from_series(series: pd.Series) -> np.ndarray:
     if pd.api.types.is_numeric_dtype(series):
         return (series.fillna(0).to_numpy(dtype=np.float64) > 0).astype(np.int64)
     values = series.astype(str).str.strip().str.lower()
-    positive = {
-        "1",
-        "abnormal",
-        "anomaly",
-        "attack",
-        "attacked",
-        "fault",
-        "true",
-        "yes",
-    }
+    positive = {"1", "abnormal", "anomaly", "attack", "attacked", "fault", "true", "yes"}
     return values.isin(positive).to_numpy(dtype=np.int64)
 
 

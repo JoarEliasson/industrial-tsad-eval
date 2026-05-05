@@ -1,1 +1,3 @@
-"""Command-line interface package."""
+"""Command-line interface."""
+
+from __future__ import annotations

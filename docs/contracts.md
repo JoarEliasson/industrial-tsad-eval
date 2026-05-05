@@ -68,13 +68,4 @@ v1. They receive:
 
 They return `DatasetAdapterResult` with dataset name, prepared path, run count,
 event count, and warnings. The application layer validates the produced dataset
-before promotion, so adapter outputs must satisfy Prepared Format v1 even when
-source data has dataset-specific layouts.
-
-The built-in adapters use these local source conventions:
-
-- `tep`: CSV first; MAT and RData when optional dependencies are installed.
-- `swat`: CSV, parquet, or Excel files with normal/attack filename inference.
-- `hai`: CSV files in a flat directory or selected `hai-YY.MM` version folder.
-- `hai-cpps`: scenario directories with mode-specific CSV files and optional
-  `sim_setup.json`.
+before promotion.
