@@ -85,6 +85,14 @@ itse xai gt-map build --prepared examples/generated/OPCUA_SYNTH --out out/gt_map
 itse xai eval --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --gt-map out/gt_map.json --out out/xai --ks 1,3,5
 ```
 
+Deterministic operator cards turn evidence into cited operator-facing summaries:
+
+```powershell
+itse operator retrieve --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --query "what should the operator check"
+itse operator card generate --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --out out/operator-cards
+itse operator card validate --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --cards out/operator-cards
+```
+
 ## Architecture
 
 The package uses a hexagonal structure:
@@ -126,6 +134,9 @@ Score Contract v1 expects one parquet per run with at least:
 Raw acquisition writes `raw_provenance.json` with `raw-provenance-v1`, source,
 method, warnings, and a SHA256 inventory of imported files.
 
+Operator cards use `operator-card-v1` JSON plus Markdown views. They are
+deterministic and cite Evidence Bundle v1 or local Markdown playbook chunks.
+
 Benchmark runs create:
 
 ```text
@@ -141,7 +152,8 @@ Benchmark runs create:
 See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisition.md),
 [docs/plugins.md](docs/plugins.md), [docs/benchmarks.md](docs/benchmarks.md),
 [docs/system.md](docs/system.md), [docs/profiling.md](docs/profiling.md),
-[docs/evidence.md](docs/evidence.md), and [docs/xai.md](docs/xai.md) for details.
+[docs/evidence.md](docs/evidence.md), [docs/xai.md](docs/xai.md), and
+[docs/operator.md](docs/operator.md) for details.
 
 ## Development
 

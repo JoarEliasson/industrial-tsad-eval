@@ -97,6 +97,23 @@ context, local rankings, and provenance.
 Ground-truth tag maps use `gt-tag-map-v1` with `dataset`, `key_mode`, and an
 `entries` object mapping event ids to tag lists.
 
+## Operator Card v1
+
+Operator-card artifacts are stored in an operator-card root:
+
+```text
+manifest.json
+index.jsonl
+retrieval/retrieval_result.json
+cards/<safe_event_id>/operator_card.json
+cards/<safe_event_id>/operator_card.md
+```
+
+`operator_card.json` uses `operator-card-v1` and includes event identity,
+`status`, situation summary, evidence highlights, checks, recommended actions,
+escalation criteria, citations, diagnostics, and provenance. `answered` cards
+must carry citations. `abstained` cards must carry an abstention reason.
+
 ## Dataset Adapter Contract
 
 Dataset adapters are plugins that convert local raw data into Prepared Format

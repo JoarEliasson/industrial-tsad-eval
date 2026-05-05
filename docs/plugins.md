@@ -2,6 +2,11 @@
 
 Plugins extend the toolkit without changing application workflows.
 
+Operator cards are not plugins in this slice. They are deterministic
+application services over Evidence Bundle v1 and optional local Markdown
+playbooks. Future LLM or detector-native explanation extensions should use new
+ports rather than changing the card contract.
+
 ## Dataset Source Plugins
 
 Dataset source plugins acquire raw data into a local cache. A plugin provides:

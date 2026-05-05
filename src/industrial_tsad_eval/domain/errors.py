@@ -53,3 +53,7 @@ class EvidenceError(IndustrialTSADError):
 
 class XAIEvaluationError(IndustrialTSADError):
     """Raised when explanation-quality evaluation cannot complete."""
+
+
+class OperatorAssistantError(IndustrialTSADError):
+    """Raised when deterministic operator-assistant workflows fail."""

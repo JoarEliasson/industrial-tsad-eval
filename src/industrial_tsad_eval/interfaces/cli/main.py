@@ -24,6 +24,11 @@ from industrial_tsad_eval.application.evidence import (
     ValidateEvidence,
     ValidateGroundTruthTagMap,
 )
+from industrial_tsad_eval.application.operator import (
+    GenerateOperatorCards,
+    RetrieveOperatorEvidence,
+    ValidateOperatorCards,
+)
 from industrial_tsad_eval.application.preflight import PreflightInput, RunPreflight
 from industrial_tsad_eval.application.preparation import PrepareDataset
 from industrial_tsad_eval.application.profiling import (
@@ -70,6 +75,8 @@ evidence_app = typer.Typer(help="Evidence Bundle workflows.")
 xai_app = typer.Typer(help="Explanation-quality evaluation workflows.")
 xai_gt_map_app = typer.Typer(help="Ground-truth tag-map workflows.")
 data_app = typer.Typer(help="Raw dataset acquisition workflows.")
+operator_app = typer.Typer(help="Deterministic operator-assistant workflows.")
+operator_card_app = typer.Typer(help="Operator card workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
@@ -82,7 +89,9 @@ app.add_typer(profile_app, name="profile")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(xai_app, name="xai")
 app.add_typer(data_app, name="data")
+app.add_typer(operator_app, name="operator")
 xai_app.add_typer(xai_gt_map_app, name="gt-map")
+operator_app.add_typer(operator_card_app, name="card")
 
 
 @prepared_app.command("validate")
@@ -590,6 +599,82 @@ def evidence_validate(
 ) -> None:
     """Validate Evidence Bundle v1 artifacts."""
     _emit_validation(ValidateEvidence(prepared, evidence).run().to_dict())
+
+
+@operator_app.command("retrieve")
+def operator_retrieve(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence root."),
+    query: str = typer.Option(..., "--query", help="Operator query."),
+    event_id: str | None = typer.Option(None, "--event-id", help="Optional event id filter."),
+    dataset: str | None = typer.Option(None, "--dataset", help="Optional dataset filter."),
+    playbooks: Path | None = typer.Option(
+        None, "--playbooks", file_okay=False, help="Optional local Markdown playbooks."
+    ),
+    top_k: int = typer.Option(8, "--top-k", min=1, help="Number of retrieval hits."),
+) -> None:
+    """Retrieve deterministic evidence chunks for an operator query."""
+    try:
+        result = RetrieveOperatorEvidence(
+            prepared=prepared,
+            evidence=evidence,
+            query=query,
+            event_id=event_id,
+            dataset=dataset,
+            playbooks=playbooks,
+            top_k=top_k,
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
+@operator_card_app.command("generate")
+def operator_card_generate(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence root."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Operator card output root."),
+    query: str | None = typer.Option(None, "--query", help="Optional operator query."),
+    event_id: str | None = typer.Option(None, "--event-id", help="Optional event id filter."),
+    dataset: str | None = typer.Option(None, "--dataset", help="Optional dataset filter."),
+    playbooks: Path | None = typer.Option(
+        None, "--playbooks", file_okay=False, help="Optional local Markdown playbooks."
+    ),
+    max_cards: int = typer.Option(25, "--max-cards", min=1, help="Maximum cards to generate."),
+) -> None:
+    """Generate deterministic operator cards from evidence bundles."""
+    try:
+        result = GenerateOperatorCards(
+            prepared=prepared,
+            evidence=evidence,
+            out=out,
+            query=query,
+            event_id=event_id,
+            dataset=dataset,
+            playbooks=playbooks,
+            max_cards=max_cards,
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
+@operator_card_app.command("validate")
+def operator_card_validate(
+    prepared: Path = typer.Option(
+        ..., "--prepared", file_okay=False, help="Prepared dataset root."
+    ),
+    evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence root."),
+    cards: Path = typer.Option(..., "--cards", file_okay=False, help="Operator card root."),
+) -> None:
+    """Validate deterministic operator-card artifacts."""
+    _emit_validation(
+        ValidateOperatorCards(prepared=prepared, evidence=evidence, cards=cards).run().to_dict()
+    )
 
 
 @xai_gt_map_app.command("build")

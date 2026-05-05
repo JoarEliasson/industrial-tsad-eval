@@ -322,3 +322,88 @@ def test_cli_evidence_and_xai_commands(tmp_path: Path):
     )
     assert xai.exit_code == 0, xai.output
     assert (xai_out / "metrics.json").exists()
+
+
+def test_cli_operator_commands(tmp_path: Path):
+    examples = tmp_path / "examples"
+    scores = tmp_path / "scores"
+    evidence = tmp_path / "evidence"
+    operator_out = tmp_path / "operator"
+    runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])
+    prepared = examples / "OPCUA_SYNTH"
+    score = runner.invoke(
+        app,
+        [
+            "score",
+            "run",
+            "--prepared",
+            str(prepared),
+            "--detector",
+            "forecast-ridge",
+            "--out",
+            str(scores),
+            "--parameters-json",
+            '{"window": 24, "stride": 4, "lags": 1}',
+        ],
+    )
+    assert score.exit_code == 0, score.output
+    generated_evidence = runner.invoke(
+        app,
+        [
+            "evidence",
+            "generate",
+            "--prepared",
+            str(prepared),
+            "--scores",
+            str(scores),
+            "--out",
+            str(evidence),
+        ],
+    )
+    assert generated_evidence.exit_code == 0, generated_evidence.output
+
+    retrieve = runner.invoke(
+        app,
+        [
+            "operator",
+            "retrieve",
+            "--prepared",
+            str(prepared),
+            "--evidence",
+            str(evidence),
+            "--query",
+            "what should the operator check",
+        ],
+    )
+    assert retrieve.exit_code == 0, retrieve.output
+    generate = runner.invoke(
+        app,
+        [
+            "operator",
+            "card",
+            "generate",
+            "--prepared",
+            str(prepared),
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(operator_out),
+        ],
+    )
+    assert generate.exit_code == 0, generate.output
+    validate = runner.invoke(
+        app,
+        [
+            "operator",
+            "card",
+            "validate",
+            "--prepared",
+            str(prepared),
+            "--evidence",
+            str(evidence),
+            "--cards",
+            str(operator_out),
+        ],
+    )
+    assert validate.exit_code == 0, validate.output
+    assert (operator_out / "manifest.json").exists()

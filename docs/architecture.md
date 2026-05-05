@@ -84,3 +84,12 @@ HitRate@K, Recall@K, masking proxy drops, and local stability.
 
 Detector-native explainers are intentionally outside this slice. The current
 implementation is deterministic and detector-agnostic.
+
+## Operator Card Slice
+
+Operator cards sit above Evidence Bundle v1. The application retrieves evidence
+chunks, optionally adds local Markdown playbooks, and renders deterministic JSON
+and Markdown cards with citations.
+
+This slice has no LLM provider, network, replay-suite, or referee dependency.
+It is an application workflow, not a detector or dataset plugin.
