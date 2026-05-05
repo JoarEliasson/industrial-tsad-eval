@@ -14,9 +14,16 @@ dist/
 .coverage
 htmlcov/
 
-# Generated examples and run artifacts
-examples/generated/
+.venv/
+venv/
+
+.idea/
+dist/
+build/
 out/
+examples/generated/
+prepared/
+scores/
 
 # Local environment
 .env
