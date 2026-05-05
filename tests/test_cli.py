@@ -119,6 +119,36 @@ def test_cli_prepared_adapters_describe_and_prepare(tmp_path: Path):
     assert (tmp_path / "prepared" / "SWaT" / "meta" / "manifest.json").exists()
 
 
+def test_cli_data_sources_describe_acquire_and_validate(tmp_path: Path):
+    raw = write_swat_raw(tmp_path / "raw")
+
+    assert runner.invoke(app, ["data", "sources"]).exit_code == 0
+    assert runner.invoke(app, ["data", "describe", "--source", "swat"]).exit_code == 0
+    acquire = runner.invoke(
+        app,
+        [
+            "data",
+            "acquire",
+            "--source",
+            "swat",
+            "--method",
+            "manual",
+            "--manual",
+            str(raw),
+            "--out",
+            str(tmp_path / "raw-cache"),
+        ],
+    )
+    assert acquire.exit_code == 0, acquire.output
+    raw_cache = tmp_path / "raw-cache" / "SWaT"
+    assert (raw_cache / "raw_provenance.json").exists()
+    validate = runner.invoke(
+        app,
+        ["data", "validate", "--source", "swat", "--raw", str(raw_cache)],
+    )
+    assert validate.exit_code == 0, validate.output
+
+
 def test_cli_benchmark_commands(tmp_path: Path):
     examples = tmp_path / "examples"
     runner.invoke(app, ["examples", "make-opcua-fixture", "--out", str(examples)])

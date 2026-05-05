@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from industrial_tsad_eval.domain.errors import PluginNotFoundError
 from industrial_tsad_eval.ports.dataset_adapters import DatasetAdapterPlugin
+from industrial_tsad_eval.ports.dataset_sources import DatasetSourcePlugin
 from industrial_tsad_eval.ports.detectors import DetectorPlugin
 
 
@@ -59,6 +60,31 @@ class DatasetAdapterRegistry:
         return sorted(self._plugins)
 
 
+@dataclass
+class DatasetSourceRegistry:
+    """In-memory registry for raw dataset source plugins."""
+
+    _plugins: dict[str, DatasetSourcePlugin] = field(default_factory=dict)
+
+    def register(self, plugin: DatasetSourcePlugin) -> None:
+        """Register or replace a dataset source by stable name."""
+        self._plugins[plugin.name] = plugin
+
+    def get_dataset_source(self, name: str) -> DatasetSourcePlugin:
+        """Return a registered dataset source plugin."""
+        try:
+            return self._plugins[name]
+        except KeyError as exc:
+            available = ", ".join(sorted(self._plugins)) or "<none>"
+            raise PluginNotFoundError(
+                f"Unknown dataset source {name!r}. Available sources: {available}."
+            ) from exc
+
+    def names(self) -> list[str]:
+        """Return registered dataset source names."""
+        return sorted(self._plugins)
+
+
 def default_detector_registry() -> DetectorRegistry:
     """Create the default detector registry."""
     from industrial_tsad_eval.plugins.forecast_ridge import ForecastRidgePlugin
@@ -90,4 +116,19 @@ def default_dataset_adapter_registry() -> DatasetAdapterRegistry:
     registry.register(SWaTDatasetAdapterPlugin())
     registry.register(HAIDatasetAdapterPlugin())
     registry.register(HAICPPSDatasetAdapterPlugin())
+    return registry
+
+
+def default_dataset_source_registry() -> DatasetSourceRegistry:
+    """Create the default raw dataset source registry."""
+    from industrial_tsad_eval.plugins.sources.hai import HAIDatasetSourcePlugin
+    from industrial_tsad_eval.plugins.sources.hai_cpps import HAICPPSDatasetSourcePlugin
+    from industrial_tsad_eval.plugins.sources.swat import SWaTDatasetSourcePlugin
+    from industrial_tsad_eval.plugins.sources.tep import TEPDatasetSourcePlugin
+
+    registry = DatasetSourceRegistry()
+    registry.register(TEPDatasetSourcePlugin())
+    registry.register(SWaTDatasetSourcePlugin())
+    registry.register(HAIDatasetSourcePlugin())
+    registry.register(HAICPPSDatasetSourcePlugin())
     return registry

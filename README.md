@@ -45,6 +45,19 @@ itse prepared prepare --dataset swat --raw data/raw/SWaT --out prepared --extra-
 itse prepared validate --prepared prepared/SWaT
 ```
 
+Raw acquisition helpers keep manual imports and optional downloads separate from
+preparation:
+
+```powershell
+python -m pip install -e ".[dev,datasets,acquisition]"
+
+itse data sources
+itse data describe --source swat
+itse data acquire --source swat --method manual --manual data/downloads/SWaT --out data/raw
+itse data validate --source swat --raw data/raw/SWaT
+itse prepared prepare --dataset swat --raw data/raw/SWaT --out prepared
+```
+
 Repeatable benchmark runs use TOML configs and existing Prepared Format
 directories:
 
@@ -80,7 +93,7 @@ The package uses a hexagonal structure:
 - `ports`: dataset adapter, detector, repository, and artifact writer interfaces.
 - `application`: use cases such as prepare, validate, score, evaluate, and benchmark.
 - `infrastructure`: local parquet/json repositories, prepared writers, and fixtures.
-- `plugins`: dataset adapter and detector implementations plus registry wiring.
+- `plugins`: dataset source, dataset adapter, and detector implementations.
 - `interfaces/cli`: Typer/Rich command-line interface.
 
 Core code does not import CLI/UI libraries. Workflows are exposed as application
@@ -110,6 +123,9 @@ Score Contract v1 expects one parquet per run with at least:
 - `ts_ns`: numeric timestamp in nanoseconds
 - `score`: numeric anomaly score where higher means more anomalous
 
+Raw acquisition writes `raw_provenance.json` with `raw-provenance-v1`, source,
+method, warnings, and a SHA256 inventory of imported files.
+
 Benchmark runs create:
 
 ```text
@@ -122,10 +138,10 @@ Benchmark runs create:
   experiments/<experiment_id>/
 ```
 
-See [docs/contracts.md](docs/contracts.md), [docs/plugins.md](docs/plugins.md),
-[docs/benchmarks.md](docs/benchmarks.md), [docs/system.md](docs/system.md),
-[docs/profiling.md](docs/profiling.md), [docs/evidence.md](docs/evidence.md),
-and [docs/xai.md](docs/xai.md) for details.
+See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisition.md),
+[docs/plugins.md](docs/plugins.md), [docs/benchmarks.md](docs/benchmarks.md),
+[docs/system.md](docs/system.md), [docs/profiling.md](docs/profiling.md),
+[docs/evidence.md](docs/evidence.md), and [docs/xai.md](docs/xai.md) for details.
 
 ## Development
 

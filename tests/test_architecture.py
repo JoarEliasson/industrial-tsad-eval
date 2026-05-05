@@ -86,5 +86,34 @@ def test_optional_profile_dependencies_are_lazy_imports():
     assert offenders == []
 
 
+def test_optional_acquisition_dependencies_are_lazy_imports():
+    offenders: list[str] = []
+    for path in _python_files():
+        relative = str(path.relative_to(SRC_ROOT)).replace("\\", "/")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = {node.module.split(".")[0]}
+            else:
+                continue
+            if "kagglehub" in names:
+                offenders.append(relative)
+
+    assert offenders == []
+
+
+def test_dataset_sources_do_not_directly_delete_output_trees():
+    sources_root = SRC_ROOT / "plugins" / "sources"
+    offenders = [
+        str(path.relative_to(SRC_ROOT))
+        for path in sources_root.glob("*.py")
+        if "rmtree" in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
 def _python_files() -> list[Path]:
     return sorted(path for path in SRC_ROOT.rglob("*.py") if "__pycache__" not in path.parts)

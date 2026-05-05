@@ -19,6 +19,10 @@ class PreparationError(IndustrialTSADError):
     """Raised when raw-to-prepared dataset preparation fails."""
 
 
+class AcquisitionError(IndustrialTSADError):
+    """Raised when raw dataset acquisition fails."""
+
+
 class BenchmarkConfigError(IndustrialTSADError):
     """Raised when a benchmark configuration is invalid."""
 

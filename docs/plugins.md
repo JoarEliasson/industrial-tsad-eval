@@ -2,6 +2,40 @@
 
 Plugins extend the toolkit without changing application workflows.
 
+## Dataset Source Plugins
+
+Dataset source plugins acquire raw data into a local cache. A plugin provides:
+
+- stable `name`, such as `swat`
+- raw `dataset_name`, such as `SWaT`
+- `supported_methods()`
+- `describe()`
+- `acquire(target, config)`
+
+The application service handles staging, overwrite policy, SHA256 inventory, and
+`raw_provenance.json`. Source plugins should only materialize raw files into the
+provided target directory.
+
+Built-in sources:
+
+- `tep`: `manual`, `mathworks-http`, optional `kaggle`.
+- `swat`: `manual`, optional `kaggle`.
+- `hai`: `manual`, optional `kaggle`, optional `git`.
+- `hai-cpps`: `manual`.
+
+Optional online helpers are installed with:
+
+```powershell
+python -m pip install -e ".[acquisition]"
+```
+
+Acquisition does not call dataset adapters automatically:
+
+```powershell
+itse data acquire --source swat --method manual --manual data/downloads/SWaT --out data/raw
+itse prepared prepare --dataset swat --raw data/raw/SWaT --out prepared
+```
+
 ## Detector Plugins
 
 A detector plugin provides:

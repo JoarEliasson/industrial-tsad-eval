@@ -9,7 +9,7 @@ independent from command-line rendering and filesystem details.
 - `ports` defines the interfaces that application services depend on.
 - `application` coordinates use cases and owns workflow-level decisions.
 - `infrastructure` implements local repositories and artifact writers.
-- `plugins` provides dataset adapter and detector implementations through registries.
+- `plugins` provides dataset source, dataset adapter, and detector implementations.
 - `interfaces/cli` is the only layer that imports Typer or Rich.
 
 ## Dependency Rules
@@ -20,8 +20,27 @@ independent from command-line rendering and filesystem details.
 - CLI code performs argument parsing and rendering only.
 - Core code raises Python/domain exceptions; CLI code translates them to exit codes.
 - Optional torch imports stay inside torch plugin/model/helper modules.
+- Optional acquisition dependencies are imported lazily inside acquisition helpers.
+- Raw acquisition writes to a staging directory, records provenance, then promotes
+  the result. Source plugins do not delete output trees directly.
 - Dataset preparation writes to a staging directory, validates Prepared Format v1,
   then promotes the result. Adapters never delete existing outputs directly.
+
+## Dataset Acquisition Flow
+
+```mermaid
+flowchart LR
+  A["CLI or caller"] --> B["AcquireDatasetSource use case"]
+  B --> C["DatasetSourceRegistry"]
+  C --> D["DatasetSourcePlugin"]
+  D --> E["Raw files in staging"]
+  B --> F["SHA256 inventory and raw provenance"]
+  F --> G["Promoted raw dataset"]
+  G --> H["PreparedDataset adapter input"]
+```
+
+Acquisition owns localization only. Preparation remains an explicit next step so
+benchmarks and scoring never trigger hidden downloads or raw-data mutation.
 
 ## Dataset Preparation Flow
 

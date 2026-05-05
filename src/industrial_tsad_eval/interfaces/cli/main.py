@@ -10,6 +10,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from industrial_tsad_eval.application.acquisition import (
+    AcquireDatasetSource,
+    DescribeDatasetSource,
+    ListDatasetSources,
+    ValidateRawAcquisition,
+)
 from industrial_tsad_eval.application.benchmark import RunBenchmark
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.evidence import (
@@ -27,6 +33,7 @@ from industrial_tsad_eval.application.profiling import (
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
+from industrial_tsad_eval.domain.acquisition import DatasetSourceConfig
 from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
 from industrial_tsad_eval.domain.errors import IndustrialTSADError
 from industrial_tsad_eval.domain.policy import EvalPolicy
@@ -44,6 +51,7 @@ from industrial_tsad_eval.infrastructure.system import (
 )
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
+    default_dataset_source_registry,
     default_detector_registry,
 )
 
@@ -61,6 +69,7 @@ profile_app = typer.Typer(help="Runtime profiling workflows.")
 evidence_app = typer.Typer(help="Evidence Bundle workflows.")
 xai_app = typer.Typer(help="Explanation-quality evaluation workflows.")
 xai_gt_map_app = typer.Typer(help="Ground-truth tag-map workflows.")
+data_app = typer.Typer(help="Raw dataset acquisition workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
@@ -72,6 +81,7 @@ app.add_typer(system_app, name="system")
 app.add_typer(profile_app, name="profile")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(xai_app, name="xai")
+app.add_typer(data_app, name="data")
 xai_app.add_typer(xai_gt_map_app, name="gt-map")
 
 
@@ -160,6 +170,81 @@ def prepare_dataset(
     except (IndustrialTSADError, ValueError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.to_dict())
+
+
+@data_app.command("sources")
+def data_sources() -> None:
+    """List registered raw dataset source plugins."""
+    rows = ListDatasetSources(source_registry=default_dataset_source_registry()).run()
+    table = Table("Name", "Dataset", "Methods", "Description")
+    for row in rows:
+        table.add_row(row.name, row.dataset_name, ", ".join(row.supported_methods), row.description)
+    console.print(table)
+
+
+@data_app.command("describe")
+def data_describe(
+    source: str = typer.Option(..., "--source", help="Dataset source name."),
+) -> None:
+    """Describe a raw dataset source plugin."""
+    try:
+        description = DescribeDatasetSource(
+            source_registry=default_dataset_source_registry(),
+            source=source,
+        ).run()
+    except IndustrialTSADError as exc:
+        _fail(str(exc))
+    console.print_json(data=description.to_dict())
+
+
+@data_app.command("acquire")
+def data_acquire(
+    source: str = typer.Option(..., "--source", help="Dataset source name."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Raw data cache directory."),
+    method: str = typer.Option("manual", "--method", help="Acquisition method."),
+    manual: Path | None = typer.Option(
+        None, "--manual", exists=False, help="Manual local raw path."
+    ),
+    ref: str | None = typer.Option(None, "--ref", help="Online source reference."),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Replace existing raw output."),
+    extra_json: str | None = typer.Option(
+        None, "--extra-json", help="Source-specific JSON options."
+    ),
+) -> None:
+    """Acquire raw dataset files into a local raw-data cache."""
+    try:
+        result = AcquireDatasetSource(
+            source_registry=default_dataset_source_registry(),
+            source=source,
+            out=out,
+            config=DatasetSourceConfig(
+                method=method,
+                manual_path=str(manual) if manual is not None else None,
+                ref=ref,
+                overwrite=overwrite,
+                extra=_json_object(extra_json),
+            ),
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+
+
+@data_app.command("validate")
+def data_validate(
+    source: str = typer.Option(..., "--source", help="Dataset source name."),
+    raw: Path = typer.Option(..., "--raw", file_okay=False, help="Raw acquisition directory."),
+) -> None:
+    """Validate raw acquisition provenance and file inventory."""
+    _emit_validation(
+        ValidateRawAcquisition(
+            source_registry=default_dataset_source_registry(),
+            source=source,
+            raw=raw,
+        )
+        .run()
+        .to_dict()
+    )
 
 
 @score_app.command("run")

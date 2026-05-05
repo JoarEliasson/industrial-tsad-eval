@@ -56,6 +56,29 @@ filenames are decoded by replacing `__` with `/`.
 
 `model_meta.json` records detector configuration and run provenance.
 
+## Raw Provenance v1
+
+Raw acquisition writes `raw_provenance.json` in the acquired raw root:
+
+```text
+<raw>/<dataset_name>/raw_provenance.json
+```
+
+The JSON object includes:
+
+- `contract_version`: `raw-provenance-v1`
+- `source_name`
+- `dataset_name`
+- `method`
+- optional `manual_path` and `ref`
+- `file_count`
+- `files`: relative path, size in bytes, and SHA256 per raw file
+- `warnings`
+
+The inventory excludes `raw_provenance.json` itself. Raw provenance validates the
+acquisition boundary only; Prepared Format validation happens after dataset
+preparation.
+
 ## Evidence Bundle v1
 
 Evidence artifacts explain one oracle or operational event. An evidence root
@@ -87,3 +110,17 @@ v1. They receive:
 They return `DatasetAdapterResult` with dataset name, prepared path, run count,
 event count, and warnings. The application layer validates the produced dataset
 before promotion.
+
+## Dataset Source Contract
+
+Dataset sources are plugins that materialize raw files into a local cache. A
+source provides:
+
+- stable `name`, such as `swat`
+- raw `dataset_name`, such as `SWaT`
+- `supported_methods()`
+- `describe()`
+- `acquire(target, config)`
+
+The application layer owns staging, overwrite policy, provenance writing, and
+promotion.

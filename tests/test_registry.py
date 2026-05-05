@@ -5,6 +5,7 @@ import pytest
 from industrial_tsad_eval.domain.errors import PluginNotFoundError
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
+    default_dataset_source_registry,
     default_detector_registry,
 )
 
@@ -25,3 +26,13 @@ def test_dataset_adapter_registry_exposes_phase_two_plugins():
     assert registry.get_dataset_adapter("swat").dataset_name == "SWaT"
     with pytest.raises(PluginNotFoundError):
         registry.get_dataset_adapter("missing")
+
+
+def test_dataset_source_registry_exposes_phase_seven_plugins():
+    registry = default_dataset_source_registry()
+
+    assert registry.names() == ["hai", "hai-cpps", "swat", "tep"]
+    assert registry.get_dataset_source("hai").supported_methods() == ["manual", "kaggle", "git"]
+    assert registry.get_dataset_source("hai-cpps").supported_methods() == ["manual"]
+    with pytest.raises(PluginNotFoundError):
+        registry.get_dataset_source("missing")
