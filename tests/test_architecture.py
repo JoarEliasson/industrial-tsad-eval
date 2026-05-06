@@ -4,6 +4,11 @@ import ast
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "industrial_tsad_eval"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_src_layout_root_is_not_a_python_package():
+    assert not (PROJECT_ROOT / "src" / "__init__.py").exists()
 
 
 def test_cli_dependencies_do_not_leak_outside_cli_package():

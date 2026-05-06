@@ -16,6 +16,10 @@ from industrial_tsad_eval.application.acquisition import (
     ListDatasetSources,
     ValidateRawAcquisition,
 )
+from industrial_tsad_eval.application.audit import (
+    ReproducibilityAuditConfig,
+    RunReproducibilityAudit,
+)
 from industrial_tsad_eval.application.benchmark import RunBenchmark
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.evidence import (
@@ -93,6 +97,7 @@ operator_app = typer.Typer(help="Deterministic operator-assistant workflows.")
 operator_card_app = typer.Typer(help="Operator card workflows.")
 rq3_app = typer.Typer(help="Thesis RQ3 assistant replay workflows.")
 reproduce_app = typer.Typer(help="Thesis-style reproduction workflows.")
+audit_app = typer.Typer(help="Clean-repo reproducibility audit workflows.")
 
 app.add_typer(prepared_app, name="prepared")
 app.add_typer(score_app, name="score")
@@ -108,6 +113,7 @@ app.add_typer(data_app, name="data")
 app.add_typer(operator_app, name="operator")
 app.add_typer(rq3_app, name="rq3")
 app.add_typer(reproduce_app, name="reproduce")
+app.add_typer(audit_app, name="audit")
 xai_app.add_typer(xai_gt_map_app, name="gt-map")
 operator_app.add_typer(operator_card_app, name="card")
 
@@ -912,6 +918,36 @@ def reproduce_summarize(
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=payload)
+
+
+@audit_app.command("run")
+def audit_run(
+    out: Path = typer.Option(
+        Path("out/audit"), "--out", file_okay=False, help="Audit output root."
+    ),
+    audit_id: str | None = typer.Option(None, "--audit-id", help="Optional audit id."),
+    include_optional: bool = typer.Option(
+        True,
+        "--include-optional/--skip-optional",
+        help="Include torch, llama.cpp, and thesis-full optional probes.",
+    ),
+) -> None:
+    """Run clean-repo reproducibility and readiness checks."""
+    try:
+        result = RunReproducibilityAudit(
+            detector_registry=default_detector_registry(),
+            provider_registry=default_llm_provider_registry(),
+            config=ReproducibilityAuditConfig(
+                out=out,
+                audit_id=audit_id,
+                include_optional=include_optional,
+            ),
+        ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+    if not result.ok:
+        raise typer.Exit(1)
 
 
 def _emit_validation(report: dict[str, Any]) -> None:

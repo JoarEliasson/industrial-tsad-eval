@@ -109,6 +109,12 @@ For full RQ3 thesis runs, `llama.cpp` is the recommended local reproducibility
 backend through its OpenAI-compatible server. Cloud providers are configured via
 environment-variable names only; secrets are never written to config files.
 
+Run a clean-repo audit before sharing or reviewing the architecture:
+
+```powershell
+itse audit run --out out/audit
+```
+
 ## Architecture
 
 The package uses a hexagonal structure:
@@ -173,7 +179,8 @@ See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisiti
 [docs/evidence.md](docs/evidence.md), [docs/xai.md](docs/xai.md), and
 [docs/operator.md](docs/operator.md), [docs/providers.md](docs/providers.md),
 [docs/rq3.md](docs/rq3.md), [docs/reproduction.md](docs/reproduction.md), and
-[docs/thesis_crosswalk.md](docs/thesis_crosswalk.md) for details.
+[docs/thesis_crosswalk.md](docs/thesis_crosswalk.md),
+[docs/reproducibility_audit.md](docs/reproducibility_audit.md) for details.
 
 ## Development
 
