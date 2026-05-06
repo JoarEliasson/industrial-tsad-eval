@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 from typer.testing import CliRunner
 
@@ -9,6 +11,7 @@ from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.evidence import GenerateEvidence
 from industrial_tsad_eval.application.rq3 import RunReplaySuite
 from industrial_tsad_eval.application.scoring import ScoreRuns
+from industrial_tsad_eval.domain.llm import LLMMessage, LLMProviderConfig, LLMRequest
 from industrial_tsad_eval.infrastructure.reproduction_config import (
     load_reproduction_config,
     load_rq3_config,
@@ -36,6 +39,40 @@ def test_provider_registry_contains_reproducibility_and_cloud_shapes():
     llama = registry.get("llama-cpp").default_config()
     assert llama.base_url == "http://127.0.0.1:8080/v1"
     assert registry.get("fake").create(registry.get("fake").default_config()).healthcheck().ok
+
+
+def test_openai_compatible_provider_protocol_with_local_stub():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatibleStubHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}/v1"
+        registry = default_llm_provider_registry()
+        provider = registry.get("llama-cpp").create(
+            LLMProviderConfig(
+                name="llama-cpp",
+                model="stub-model",
+                base_url=base_url,
+                timeout_s=5.0,
+            )
+        )
+
+        health = provider.healthcheck()
+        response = provider.generate(
+            LLMRequest(
+                messages=[
+                    LLMMessage(role="system", content="Use cited evidence."),
+                    LLMMessage(role="user", content="Summarize the event [C1]."),
+                ]
+            )
+        )
+
+        assert health.ok
+        assert response.provider == "llama-cpp"
+        assert "[C1]" in response.text
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
 
 
 def test_rq3_config_parsing_resolves_paths(tmp_path: Path, opcua_prepared: Path):
@@ -174,3 +211,45 @@ def _replace_config_path(path: Path, placeholder: str, prepared: Path) -> None:
         path.read_text(encoding="utf-8").replace(placeholder, escaped),
         encoding="utf-8",
     )
+
+
+class _OpenAICompatibleStubHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path == "/v1/models":
+            self._json_response({"object": "list", "data": [{"id": "stub-model"}]})
+            return
+        self.send_error(404)
+
+    def do_POST(self) -> None:
+        if self.path != "/v1/chat/completions":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        self._json_response(
+            {
+                "id": "chatcmpl-stub",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "- Stubbed provider path is healthy [C1].",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _json_response(self, payload: dict[str, object]) -> None:
+        encoded = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)

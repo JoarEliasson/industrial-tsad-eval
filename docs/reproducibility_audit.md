@@ -1,9 +1,9 @@
 # Reproducibility Audit
 
-The audit workflow is a clean-repo readiness check. It verifies that the package
-imports, the CLI loads, architecture tests pass, the OPC-UA smoke fixture can be
-generated, and thesis-smoke reproduction produces benchmark, evidence, XAI, and
-RQ3 artifacts.
+The audit workflow verifies that a clean checkout can run the committed
+architecture end to end. It checks package imports, CLI loading, architecture
+tests, OPC-UA fixture generation, thesis-smoke reproduction, synthetic raw data
+setup, evidence/XAI outputs, RQ3 artifacts, and optional local resources.
 
 Run:
 
@@ -26,6 +26,7 @@ out/audit/<audit_id>/
   logs/
   workspace/
   reproduction/smoke-audit/
+  synthetic-full-reproduction/thesis-full-smoke/
 ```
 
 Statuses mean:
@@ -35,10 +36,30 @@ Statuses mean:
 - `warn`: optional check ran but produced a non-blocking problem.
 - `skipped`: optional local resource was unavailable.
 
-Optional probes include a tiny torch detector smoke, a live llama.cpp RQ3 smoke
-when `http://127.0.0.1:8080/v1` is reachable, and thesis-full local prepared
-dataset readiness when `prepared/TEP`, `prepared/SWaT`, `prepared/HAI`, and
-`prepared/HAI-CPPS` exist.
+Required checks include a synthetic thesis-full setup rehearsal:
+
+```text
+examples make-thesis-raw-fixtures
+data acquire --method manual
+data validate
+prepared prepare
+prepared validate
+reproduce run --run-id thesis-full-smoke
+```
+
+The generated raw fixtures cover TEP, SWaT, HAI, and HAI-CPPS adapter shapes.
+They do not replace real datasets; they verify that the acquisition,
+preparation, benchmark, evidence, XAI, and RQ3 orchestration surfaces still fit
+together.
+
+Optional probes include a tiny torch detector smoke, profiling extras
+availability, a live llama.cpp RQ3 smoke when `http://127.0.0.1:8080/v1` is
+reachable, and thesis-full local prepared dataset setup when `prepared/TEP`,
+`prepared/SWaT`, `prepared/HAI`, and `prepared/HAI_CPPS` exist.
+
+`audit_summary.json` and `audit_summary.md` include `setup_recommendations` for
+skipped optional resources. Each recommendation contains commands and success
+criteria for the next local setup step.
 
 The standard quality gates remain:
 

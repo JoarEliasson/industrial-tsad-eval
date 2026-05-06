@@ -19,6 +19,18 @@ FEATURES = [
 ]
 
 
+def make_thesis_raw_fixtures(out: str | Path) -> dict[str, str]:
+    """Generate tiny local raw fixtures for thesis-style dataset adapters."""
+    root = Path(out)
+    fixtures = {
+        "tep": _write_tep_raw(root / "tep"),
+        "swat": _write_swat_raw(root / "swat"),
+        "hai": _write_hai_raw(root / "hai"),
+        "hai-cpps": _write_hai_cpps_raw(root / "hai-cpps"),
+    }
+    return {name: str(path) for name, path in fixtures.items()}
+
+
 def make_opcua_fixture(out: str | Path) -> Path:
     """Generate a tiny OPC-UA-like Prepared Format v1 dataset."""
     dataset_root = Path(out) / "OPCUA_SYNTH"
@@ -126,6 +138,85 @@ def _make_run(base_ns: int, period_ns: int, offset: int, anomaly: bool) -> pd.Da
             FEATURES[1]: flow.astype(np.float32),
             FEATURES[2]: valve.astype(np.float32),
             FEATURES[3]: speed.astype(np.float32),
+        }
+    )
+
+
+def _write_swat_raw(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    normal = _industrial_raw_frame(220)
+    normal["Normal/Attack"] = "Normal"
+    attack = _industrial_raw_frame(220, anomaly=True)
+    attack["Normal/Attack"] = [
+        "Attack" if 140 <= index <= 170 else "Normal" for index in range(220)
+    ]
+    normal.to_csv(root / "SWaT_Dataset_Normal.csv", index=False)
+    attack.to_csv(root / "SWaT_Dataset_Attack.csv", index=False)
+    return root
+
+
+def _write_hai_raw(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    train = _industrial_raw_frame(220).rename(
+        columns={"SensorA": "P1_FIT101", "ValveA": "P2_MV201"}
+    )
+    test = _industrial_raw_frame(220, anomaly=True).rename(
+        columns={"SensorA": "P1_FIT101", "ValveA": "P2_MV201"}
+    )
+    test["attack"] = [1 if 130 <= index <= 155 else 0 for index in range(220)]
+    train.to_csv(root / "hai_train.csv", index=False)
+    test.to_csv(root / "hai_test_attack.csv", index=False)
+    return root
+
+
+def _write_tep_raw(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    index = np.arange(220)
+    train = pd.DataFrame(
+        {
+            "simulationRun": 1,
+            "sample": index + 1,
+            "faultNumber": 0,
+            "xmeas_1": 10.0 + np.sin(index / 12.0),
+            "xmv_1": 20.0 + np.cos(index / 18.0),
+        }
+    )
+    test = train.copy()
+    test["faultNumber"] = 1
+    test.loc[160:, "xmeas_1"] += 3.0
+    test.to_csv(root / "d00_train.csv", index=False)
+    test.to_csv(root / "d01_test.csv", index=False)
+    return root
+
+
+def _write_hai_cpps_raw(root: Path) -> Path:
+    normal_dir = root / "normal_scenario"
+    attack_dir = root / "anomaly_scenario"
+    normal_dir.mkdir(parents=True, exist_ok=True)
+    attack_dir.mkdir(parents=True, exist_ok=True)
+    _industrial_raw_frame(220).to_csv(normal_dir / "continuous.csv", index=False)
+    _industrial_raw_frame(220, anomaly=True).to_csv(attack_dir / "continuous.csv", index=False)
+    write_json(
+        attack_dir / "sim_setup.json",
+        {"attack_start": 120, "attack_duration": 30, "tag": "SensorA"},
+    )
+    return root
+
+
+def _industrial_raw_frame(rows: int, anomaly: bool = False) -> pd.DataFrame:
+    index = np.arange(rows)
+    sensor = 10.0 + np.sin(index / 12.0)
+    flow = 5.0 + np.cos(index / 20.0)
+    valve = 1.0 + 0.1 * np.sin(index / 18.0)
+    if anomaly:
+        sensor[120:170] += np.linspace(1.0, 4.0, 50)
+        flow[120:170] -= 1.0
+    return pd.DataFrame(
+        {
+            "Timestamp": pd.date_range("2026-01-01", periods=rows, freq="s"),
+            "SensorA": sensor,
+            "FlowA": flow,
+            "ValveA": valve,
         }
     )
 

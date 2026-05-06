@@ -26,6 +26,21 @@ class AuditCheck:
 
 
 @dataclass(frozen=True)
+class AuditSetupRecommendation:
+    """Actionable next step for optional local setup."""
+
+    resource: str
+    status: AuditStatus
+    reason: str
+    commands: list[str] = field(default_factory=list)
+    success_criteria: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible data."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class AuditRunResult:
     """Summary of a reproducibility audit run."""
 
@@ -33,6 +48,7 @@ class AuditRunResult:
     audit_dir: str
     ok: bool
     checks: list[AuditCheck]
+    setup_recommendations: list[AuditSetupRecommendation] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
@@ -41,6 +57,9 @@ class AuditRunResult:
             "audit_dir": self.audit_dir,
             "ok": self.ok,
             "checks": [check.to_dict() for check in self.checks],
+            "setup_recommendations": [
+                recommendation.to_dict() for recommendation in self.setup_recommendations
+            ],
             "counts": {
                 "pass": sum(1 for check in self.checks if check.status == "pass"),
                 "warn": sum(1 for check in self.checks if check.status == "warn"),

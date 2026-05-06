@@ -11,6 +11,23 @@ def test_src_layout_root_is_not_a_python_package():
     assert not (PROJECT_ROOT / "src" / "__init__.py").exists()
 
 
+def test_public_repo_has_no_personal_review_meta_wording():
+    forbidden = ["inter" + "view"]
+    roots = [
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs",
+        PROJECT_ROOT / "src",
+        PROJECT_ROOT / "tests",
+    ]
+    offenders: list[str] = []
+    for path in _text_files(roots):
+        text = path.read_text(encoding="utf-8").lower()
+        if any(term in text for term in forbidden):
+            offenders.append(str(path.relative_to(PROJECT_ROOT)))
+
+    assert offenders == []
+
+
 def test_cli_dependencies_do_not_leak_outside_cli_package():
     offenders: list[str] = []
     for path in _python_files():
@@ -165,3 +182,19 @@ def test_dataset_sources_do_not_directly_delete_output_trees():
 
 def _python_files() -> list[Path]:
     return sorted(path for path in SRC_ROOT.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def _text_files(roots: list[Path]) -> list[Path]:
+    suffixes = {".md", ".py", ".toml"}
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file() and root.suffix in suffixes:
+            files.append(root)
+            continue
+        if root.is_dir():
+            files.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix in suffixes and "__pycache__" not in path.parts
+            )
+    return sorted(files)

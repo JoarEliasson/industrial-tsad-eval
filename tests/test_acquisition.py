@@ -22,6 +22,7 @@ from industrial_tsad_eval.domain.errors import (
     PluginNotFoundError,
 )
 from industrial_tsad_eval.infrastructure.acquisition import safe_unpack_archive
+from industrial_tsad_eval.infrastructure.examples import make_thesis_raw_fixtures
 from industrial_tsad_eval.infrastructure.json_utils import read_json
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
@@ -172,3 +173,32 @@ def test_manual_acquire_then_prepare_for_all_adapters(
     assert acquired.dataset_name == dataset_name
     assert prepared.dataset_name == dataset_name
     assert ValidatePreparedDataset(prepared.prepared_path).run().ok
+
+
+def test_generated_thesis_raw_fixtures_acquire_prepare_and_validate(tmp_path: Path):
+    raw_fixtures = make_thesis_raw_fixtures(tmp_path / "raw-fixtures")
+    expected_sources = {"tep", "swat", "hai", "hai-cpps"}
+
+    assert set(raw_fixtures) == expected_sources
+    for source in sorted(expected_sources):
+        acquired = AcquireDatasetSource(
+            source_registry=default_dataset_source_registry(),
+            source=source,
+            out=tmp_path / "raw-cache",
+            config=DatasetSourceConfig(method="manual", manual_path=raw_fixtures[source]),
+        ).run()
+        raw_report = ValidateRawAcquisition(
+            source_registry=default_dataset_source_registry(),
+            source=source,
+            raw=acquired.raw_path,
+        ).run()
+        prepared = PrepareDataset(
+            adapter_registry=default_dataset_adapter_registry(),
+            dataset=source,
+            raw=acquired.raw_path,
+            out=tmp_path / "prepared",
+        ).run()
+
+        assert raw_report.ok
+        assert prepared.run_count >= 1
+        assert ValidatePreparedDataset(prepared.prepared_path).run().ok

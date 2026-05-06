@@ -59,6 +59,19 @@ def test_cli_core_vertical_slice(tmp_path: Path):
     assert eval_result.exit_code == 0, eval_result.output
 
 
+def test_cli_generates_thesis_raw_fixtures(tmp_path: Path):
+    result = runner.invoke(
+        app,
+        ["examples", "make-thesis-raw-fixtures", "--out", str(tmp_path / "raw-fixtures")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "raw-fixtures" / "tep" / "d00_train.csv").exists()
+    assert (tmp_path / "raw-fixtures" / "swat" / "SWaT_Dataset_Attack.csv").exists()
+    assert (tmp_path / "raw-fixtures" / "hai" / "hai_test_attack.csv").exists()
+    assert (tmp_path / "raw-fixtures" / "hai-cpps" / "anomaly_scenario" / "sim_setup.json").exists()
+
+
 def test_cli_lists_detectors():
     result = runner.invoke(app, ["score", "detectors"])
 

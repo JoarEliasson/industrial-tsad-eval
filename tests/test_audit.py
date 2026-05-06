@@ -38,4 +38,33 @@ def test_cli_reproducibility_audit_smoke(tmp_path: Path):
         "reproduction-run",
         "reproduction-artifacts",
         "rq3-preflight",
+        "synthetic-thesis-setup",
     }
+    synthetic_root = audit_root / "synthetic-full-reproduction" / "thesis-full-smoke"
+    assert (synthetic_root / "summary.json").exists()
+    assert (synthetic_root / "summaries" / "rq3_summary.csv").exists()
+    assert "setup_recommendations" in payload
+
+
+def test_audit_optional_recommendations_are_actionable(tmp_path: Path):
+    result = runner.invoke(
+        app,
+        [
+            "audit",
+            "run",
+            "--out",
+            str(tmp_path / "audit"),
+            "--audit-id",
+            "optional-audit",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(
+        (tmp_path / "audit" / "optional-audit" / "audit_summary.json").read_text(encoding="utf-8")
+    )
+    recommendations = payload["setup_recommendations"]
+    assert isinstance(recommendations, list)
+    for recommendation in recommendations:
+        assert recommendation["commands"]
+        assert recommendation["success_criteria"]

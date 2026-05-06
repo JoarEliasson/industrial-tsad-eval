@@ -1,6 +1,6 @@
 # Industrial TSAD Eval
 
-Industrial TSAD Eval is a small, product-oriented toolkit for evaluating
+Industrial TSAD Eval is a research toolkit for evaluating
 industrial time-series anomaly detection systems. It standardizes datasets into
 a stable Prepared Format, writes detector outputs through a Score Contract, and
 evaluates event-level detection quality with reproducible artifact outputs.
@@ -56,6 +56,14 @@ itse data describe --source swat
 itse data acquire --source swat --method manual --manual data/downloads/SWaT --out data/raw
 itse data validate --source swat --raw data/raw/SWaT
 itse prepared prepare --dataset swat --raw data/raw/SWaT --out prepared
+```
+
+The setup flow can be rehearsed without gated datasets:
+
+```powershell
+itse examples make-thesis-raw-fixtures --out out/setup-fixtures/raw
+itse data acquire --source swat --method manual --manual out/setup-fixtures/raw/swat --out out/setup-fixtures/raw-cache
+itse prepared prepare --dataset swat --raw out/setup-fixtures/raw-cache/SWaT --out out/setup-fixtures/prepared
 ```
 
 Repeatable benchmark runs use TOML configs and existing Prepared Format
@@ -180,7 +188,8 @@ See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisiti
 [docs/operator.md](docs/operator.md), [docs/providers.md](docs/providers.md),
 [docs/rq3.md](docs/rq3.md), [docs/reproduction.md](docs/reproduction.md), and
 [docs/thesis_crosswalk.md](docs/thesis_crosswalk.md),
-[docs/reproducibility_audit.md](docs/reproducibility_audit.md) for details.
+[docs/reproducibility_audit.md](docs/reproducibility_audit.md), and
+[docs/optional_setup.md](docs/optional_setup.md) for details.
 
 ## Development
 

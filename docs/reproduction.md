@@ -19,7 +19,7 @@ itse reproduce init-config --out config/thesis_full.toml --profile thesis-full
 ```
 
 The full profile expects local Prepared Format roots for TEP, SWaT, HAI, and
-HAI-CPPS. Raw data and credentials are never vendored.
+HAI_CPPS. Raw data and credentials are never vendored.
 
 ## Stages
 

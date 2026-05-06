@@ -57,7 +57,10 @@ from industrial_tsad_eval.infrastructure.benchmark_config import (
     load_benchmark_config,
     write_default_benchmark_config,
 )
-from industrial_tsad_eval.infrastructure.examples import make_opcua_fixture
+from industrial_tsad_eval.infrastructure.examples import (
+    make_opcua_fixture,
+    make_thesis_raw_fixtures,
+)
 from industrial_tsad_eval.infrastructure.json_utils import write_json
 from industrial_tsad_eval.infrastructure.reproduction_config import (
     load_reproduction_config,
@@ -376,6 +379,18 @@ def make_fixture(
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data={"prepared": str(path)})
+
+
+@examples_app.command("make-thesis-raw-fixtures")
+def make_thesis_raw_fixtures_command(
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Output directory."),
+) -> None:
+    """Generate tiny raw fixtures for thesis-style dataset adapters."""
+    try:
+        paths = make_thesis_raw_fixtures(out)
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data={"raw_fixtures": paths})
 
 
 @bench_app.command("init-config")
@@ -932,10 +947,12 @@ def audit_run(
         help="Include torch, llama.cpp, and thesis-full optional probes.",
     ),
 ) -> None:
-    """Run clean-repo reproducibility and readiness checks."""
+    """Run clean-repo reproducibility audit checks."""
     try:
         result = RunReproducibilityAudit(
             detector_registry=default_detector_registry(),
+            dataset_adapter_registry=default_dataset_adapter_registry(),
+            dataset_source_registry=default_dataset_source_registry(),
             provider_registry=default_llm_provider_registry(),
             config=ReproducibilityAuditConfig(
                 out=out,

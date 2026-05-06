@@ -87,7 +87,7 @@ prepared = "prepared/HAI"
 
 [[datasets]]
 id = "HAI-CPPS"
-prepared = "prepared/HAI-CPPS"
+prepared = "prepared/HAI_CPPS"
 
 [[detectors]]
 id = "dra"
