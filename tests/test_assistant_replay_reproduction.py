@@ -29,7 +29,10 @@ from industrial_tsad_eval.infrastructure.reproduction_config import (
     write_default_reproduction_config,
 )
 from industrial_tsad_eval.interfaces.cli.main import app
-from industrial_tsad_eval.plugins.providers import default_llm_provider_registry
+from industrial_tsad_eval.plugins.providers import (
+    _schema_instruction,
+    default_llm_provider_registry,
+)
 from industrial_tsad_eval.plugins.registry import default_detector_registry
 
 runner = CliRunner()
@@ -50,10 +53,12 @@ def test_provider_registry_contains_reproducibility_and_cloud_shapes():
     llama = registry.get("llama-cpp").default_config()
     assert llama.model == "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
     assert llama.base_url == "http://127.0.0.1:8080/v1"
+    assert llama.extra["structured_output_mode"] == "json_object"
     assert registry.get("fake").create(registry.get("fake").default_config()).healthcheck().ok
 
 
 def test_openai_compatible_provider_protocol_with_local_stub():
+    _OpenAICompatibleStubHandler.seen_response_formats = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatibleStubHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -93,12 +98,19 @@ def test_openai_compatible_provider_protocol_with_local_stub():
         assert response.provider == "llama-cpp"
         assert "[C1]" in response.text
         assert structured.payload["checks"]
+        assert structured.metadata["response_format"] == {"type": "json_object"}
+        assert structured.metadata["failed_attempts"] == []
+        seen_types = [
+            item.get("type") for item in _OpenAICompatibleStubHandler.seen_response_formats
+        ]
+        assert seen_types == ["json_object"]
     finally:
         server.shutdown()
         thread.join(timeout=5.0)
 
 
-def test_openai_compatible_structured_fallback_records_failed_attempt():
+def test_llama_cpp_json_object_succeeds_without_json_schema_attempts():
+    _FallbackStructuredStubHandler.seen_response_formats = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FallbackStructuredStubHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -127,10 +139,96 @@ def test_openai_compatible_structured_fallback_records_failed_attempt():
 
         assert DraftResponse.model_validate(structured.payload).checks
         assert structured.metadata["structured_attempt"] == "json_object"
-        assert structured.metadata["failed_attempts"]
+        assert structured.metadata["failed_attempts"] == []
+        seen_types = [
+            item.get("type") for item in _FallbackStructuredStubHandler.seen_response_formats
+        ]
+        assert seen_types == ["json_object"]
     finally:
         server.shutdown()
         thread.join(timeout=5.0)
+
+
+def test_generic_openai_compatible_can_still_use_json_schema():
+    _OpenAICompatibleStubHandler.seen_response_formats = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatibleStubHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}/v1"
+        provider = (
+            default_llm_provider_registry()
+            .get("openai-compatible")
+            .create(
+                LLMProviderConfig(
+                    name="openai-compatible",
+                    model="stub-model",
+                    base_url=base_url,
+                    timeout_s=5.0,
+                    extra={
+                        "structured_output_mode": "json_schema",
+                        "structured_output_allow_fallback": False,
+                    },
+                )
+            )
+        )
+
+        structured = provider.generate_json(
+            LLMStructuredRequest(
+                messages=[LLMMessage(role="user", content="Return DraftResponse JSON.")],
+                schema_name="DraftResponse",
+                json_schema=DraftResponse.model_json_schema(),
+            )
+        )
+
+        assert DraftResponse.model_validate(structured.payload).checks
+        assert structured.metadata["structured_attempt"] == "json_schema:openai_nested"
+        assert structured.metadata["response_format"]["type"] == "json_schema"
+        seen_types = [
+            item.get("type") for item in _OpenAICompatibleStubHandler.seen_response_formats
+        ]
+        assert seen_types == ["json_schema"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5.0)
+
+
+def test_compact_assistant_schema_instructions_are_short_and_specific():
+    draft_schema = DraftResponse.model_json_schema()
+    referee_schema = ClaimEvaluation.model_json_schema()
+
+    draft_instruction = _schema_instruction("DraftResponse", draft_schema)
+    referee_instruction = _schema_instruction("ClaimEvaluation", referee_schema)
+
+    assert len(draft_instruction) < len(json.dumps(draft_schema, sort_keys=True))
+    assert len(referee_instruction) < len(json.dumps(referee_schema, sort_keys=True))
+    for key in (
+        "symptom_summary",
+        "likely_causes",
+        "checks",
+        "recommended_actions",
+        "escalation_criteria",
+    ):
+        assert key in draft_instruction
+    for key in (
+        "is_supported",
+        "entailment_label",
+        "entailment_reasoning",
+        "final_disposition",
+        "rewritten_statement",
+    ):
+        assert key in referee_instruction
+
+
+def test_invalid_structured_payload_still_fails_pydantic_validation():
+    invalid = {"symptom_summary": "ok", "checks": "not-a-list"}
+
+    try:
+        DraftResponse.model_validate(invalid)
+    except ValueError:
+        pass
+    else:  # pragma: no cover - this documents the expected pydantic boundary.
+        raise AssertionError("Invalid DraftResponse payload unexpectedly validated.")
 
 
 def test_failed_assistant_case_writes_diagnostic_artifacts(tmp_path: Path, opcua_prepared: Path):
@@ -349,6 +447,8 @@ def _replace_config_path(path: Path, placeholder: str, prepared: Path) -> None:
 
 
 class _OpenAICompatibleStubHandler(BaseHTTPRequestHandler):
+    seen_response_formats: list[dict[str, object]] = []
+
     def do_GET(self) -> None:
         if self.path == "/v1/models":
             self._json_response({"object": "list", "data": [{"id": "stub-model"}]})
@@ -362,15 +462,14 @@ class _OpenAICompatibleStubHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
         response_format = payload.get("response_format", {})
+        if isinstance(response_format, dict) and response_format:
+            self.__class__.seen_response_formats.append(dict(response_format))
         content = "- Stubbed provider path is healthy [C1]."
         if isinstance(response_format, dict) and response_format.get("type") in {
             "json_schema",
             "json_object",
         }:
-            schema_name = "DraftResponse"
-            nested = response_format.get("json_schema")
-            if isinstance(nested, dict):
-                schema_name = str(nested.get("name", schema_name))
+            schema_name = _stub_schema_name(payload, response_format)
             if schema_name == "ClaimEvaluation":
                 content = json.dumps(
                     {
@@ -428,6 +527,8 @@ class _FallbackStructuredStubHandler(_OpenAICompatibleStubHandler):
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
         response_format = payload.get("response_format", {})
+        if isinstance(response_format, dict) and response_format:
+            self.__class__.seen_response_formats.append(dict(response_format))
         content = "not json"
         if isinstance(response_format, dict) and response_format.get("type") == "json_object":
             content = json.dumps(
@@ -452,6 +553,22 @@ class _FallbackStructuredStubHandler(_OpenAICompatibleStubHandler):
                 ],
             }
         )
+
+
+def _stub_schema_name(payload: dict[str, object], response_format: dict[str, object]) -> str:
+    nested = response_format.get("json_schema")
+    if isinstance(nested, dict):
+        name = nested.get("name")
+        if isinstance(name, str):
+            return name
+    messages = payload.get("messages", [])
+    if isinstance(messages, list):
+        text = "\n".join(
+            str(item.get("content", "")) for item in messages if isinstance(item, dict)
+        )
+        if "ClaimEvaluation" in text or "final_disposition" in text:
+            return "ClaimEvaluation"
+    return "DraftResponse"
 
 
 class _InvalidStructuredStubHandler(_OpenAICompatibleStubHandler):

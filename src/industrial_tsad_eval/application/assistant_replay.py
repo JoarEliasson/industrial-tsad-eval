@@ -50,6 +50,7 @@ Rules:
 - No outside knowledge, speculation, fabricated thresholds, or ungrounded advice.
 - If evidence is weak, stay conservative.
 - symptom_summary: exactly one neutral evidence-grounded sentence, never an instruction. Keep it high-level; do not enumerate more than two named targets there. Put named targets in checks. Never use should/check/inspect/verify/monitor/review/examine there.
+- If retrieved evidence only ranks variables or artifacts, set symptom_summary to an empty string and put the named variables in checks.
 - checks: bounded inspection or verification steps tied to named evidence targets.
 - recommended_actions: bounded actions beyond checking only when explicitly supported.
 - If a technical_pdf, manual_pdf, public_testbed_operating_doc, or response_playbook hit directly states a general detection, monitoring, response, or documentation action, you may include one short checks/recommended_actions/escalation_criteria item grounded in that document.

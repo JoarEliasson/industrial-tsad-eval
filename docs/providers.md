@@ -8,7 +8,9 @@ assistant replay application service does not know whether a model is local or c
 - `llama-cpp`: recommended thesis-reproducibility path. It targets a running
   llama.cpp OpenAI-compatible chat server, usually
   `http://127.0.0.1:8080/v1`. The default reproducible profile is
-  Qwen2.5-7B-Instruct GGUF Q4_K_M served by llama.cpp.
+  Qwen2.5-7B-Instruct GGUF Q4_K_M served by llama.cpp. Structured assistant
+  replay uses OpenAI-compatible JSON-object mode because current llama.cpp
+  servers accept `response_format = {"type": "json_object"}`.
 - `openai-compatible`: generic OpenAI-compatible endpoint for local or cloud
   servers.
 - `openai`: OpenAI-compatible hosted endpoint using `OPENAI_API_KEY`.
@@ -25,6 +27,7 @@ Provider config stores only environment variable names, never secrets:
 name = "llama-cpp"
 model = "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
 base_url = "http://127.0.0.1:8080/v1"
+timeout_s = 180.0
 temperature = 0.0
 top_p = 1.0
 max_tokens = 700

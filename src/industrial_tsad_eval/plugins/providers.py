@@ -315,6 +315,7 @@ class OpenAICompatibleProvider:
                         "raw_response_keys": sorted(response.keys()),
                         "schema_name": request.schema_name,
                         "structured_attempt": attempt["mode"],
+                        "response_format": attempt["response_format"],
                         "failed_attempts": failures,
                         "raw_text_preview": text[:1000],
                     },
@@ -470,7 +471,7 @@ def default_llm_provider_registry() -> LLMProviderRegistry:
             default_api_key_env=None,
             requires_api_key=False,
             description="Local llama.cpp OpenAI-compatible chat server.",
-            default_extra={"structured_output_schema_shape": "llamacpp_flat"},
+            default_extra={"structured_output_mode": "json_object"},
         )
     )
     registry.register(
@@ -696,6 +697,24 @@ def _messages_for_structured_attempt(
 
 
 def _schema_instruction(schema_name: str, json_schema: dict[str, Any]) -> str:
+    if schema_name == "DraftResponse":
+        return (
+            "Return only one valid JSON object. Do not wrap it in markdown. "
+            "Use exactly these keys: symptom_summary, likely_causes, checks, "
+            "recommended_actions, escalation_criteria. symptom_summary must be a string. "
+            "All other values must be arrays of strings. Use empty strings or empty arrays "
+            "when evidence is insufficient. If evidence only ranks variables or artifacts, "
+            "use an empty symptom_summary and put the variable names in checks."
+        )
+    if schema_name == "ClaimEvaluation":
+        return (
+            "Return only one valid JSON object. Do not wrap it in markdown. "
+            "Use exactly these keys: is_supported, entailment_label, entailment_reasoning, "
+            "final_disposition, rewritten_statement. is_supported must be boolean. "
+            "entailment_label must be entails, insufficient, or contradicts. "
+            "final_disposition must be keep, rewrite, or remove. "
+            "rewritten_statement must be a string or null."
+        )
     return (
         f"Return only one valid JSON object matching schema {schema_name}. "
         "Do not wrap the JSON in markdown. Schema: "
