@@ -63,8 +63,8 @@ class ProviderConfigError(IndustrialTSADError):
     """Raised when an LLM provider configuration is invalid."""
 
 
-class RQ3RunError(IndustrialTSADError):
-    """Raised when an RQ3 replay suite cannot complete."""
+class AssistantReplayError(IndustrialTSADError):
+    """Raised when an assistant replay suite cannot complete."""
 
 
 class ReproductionError(IndustrialTSADError):

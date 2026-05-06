@@ -75,6 +75,46 @@ class LLMResponse:
 
 
 @dataclass(frozen=True)
+class LLMStructuredRequest:
+    """Provider-neutral request for schema-constrained JSON generation."""
+
+    messages: list[LLMMessage]
+    schema_name: str
+    json_schema: dict[str, Any]
+    max_tokens: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the request for artifact capture."""
+        return {
+            "messages": [message.to_dict() for message in self.messages],
+            "schema_name": self.schema_name,
+            "json_schema": dict(self.json_schema),
+            "max_tokens": self.max_tokens,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class LLMStructuredResponse:
+    """Provider-neutral JSON generation response."""
+
+    payload: dict[str, Any]
+    provider: str
+    model: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the response for artifact capture."""
+        return {
+            "payload": dict(self.payload),
+            "provider": self.provider,
+            "model": self.model,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
 class LLMProviderHealth:
     """Readiness status for one provider configuration."""
 

@@ -14,7 +14,7 @@ repositories.
 | Multi-run experiments | TOML benchmark orchestration |
 | System/machine reporting | `RunPreflight` and `ProfileScoreEvaluate` |
 | Evidence and XAI evaluation | Evidence Bundle v1, GT tag maps, `EvaluateEvidence` |
-| RQ3 assistant experiment | Provider-backed replay suites, retrieval, planner artifacts, referee metrics |
+| assistant replay experiment | Provider-backed replay suites, retrieval, planner artifacts, referee metrics |
 | Operator-readable output | Optional deterministic operator cards |
 
 The old `tsad.thesis` and `tsad.operator_assistant` modules are reference

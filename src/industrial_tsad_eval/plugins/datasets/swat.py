@@ -12,10 +12,13 @@ from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig, DatasetAd
 from industrial_tsad_eval.infrastructure.data_utils import (
     binary_labels_from_series,
     segments_from_binary,
+    to_unix_ns,
 )
 from industrial_tsad_eval.plugins.datasets.common import (
+    TIME_COLUMNS,
     PreparedRun,
     build_prepared_frame,
+    detect_column,
     detect_label_column,
     discover_table_files,
     write_prepared_dataset,
@@ -59,6 +62,7 @@ class SWaTDatasetAdapterPlugin:
                 from industrial_tsad_eval.infrastructure.data_utils import read_table
 
                 table = read_table(table_path)
+            table = _sort_by_timestamp(table)
             label_column = detect_label_column(table)
             split = _split_from_name(table_path)
             run_id = f"swat/{split}/{table_path.stem}_{index:03d}"
@@ -98,6 +102,19 @@ def _split_from_name(path: Path) -> str:
     if any(token in lowered for token in ("attack", "anomaly", "test")):
         return "test"
     return "train"
+
+
+def _sort_by_timestamp(table: pd.DataFrame) -> pd.DataFrame:
+    timestamp_column = detect_column(table, TIME_COLUMNS)
+    if timestamp_column is None:
+        return table.reset_index(drop=True)
+    sorted_table = table.copy()
+    sorted_table["__itse_ts_sort"] = to_unix_ns(sorted_table[timestamp_column])
+    return (
+        sorted_table.sort_values("__itse_ts_sort", kind="mergesort")
+        .drop(columns=["__itse_ts_sort"])
+        .reset_index(drop=True)
+    )
 
 
 def _events_from_labels(

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig, DatasetAdapterResult
+from industrial_tsad_eval.domain.errors import PreparationError
 from industrial_tsad_eval.infrastructure.data_utils import segments_from_binary
 from industrial_tsad_eval.plugins.datasets.common import (
     PreparedRun,
@@ -34,8 +35,8 @@ class TEPDatasetAdapterPlugin:
     def describe_expected_raw_layout(self) -> str:
         """Describe accepted local raw inputs."""
         return (
-            "Directory with TEP CSV files. Columns such as faultNumber, simulationRun, sample, "
-            "XMEAS(1)/xmeas_1, and XMV(1)/xmv_1 are recognized."
+            "Directory with TEP CSV, RData, or RDS files. Columns such as faultNumber, "
+            "simulationRun, sample, XMEAS(1)/xmeas_1, and XMV(1)/xmv_1 are recognized."
         )
 
     def prepare(
@@ -50,17 +51,11 @@ class TEPDatasetAdapterPlugin:
         events: list[dict[str, Any]] = []
         warnings: list[str] = []
 
-        for table_path in discover_table_files(raw):
-            if table_path.suffix.lower() != ".csv":
-                warnings.append(
-                    f"Skipped unsupported TEP table {table_path.name}; CSV is supported now."
-                )
-                continue
-            table = pd.read_csv(table_path, low_memory=False)
+        for table_path, table_name, table in _read_tep_tables(raw):
             for run_index, run_frame in _group_tep_runs(table):
                 fault_id = _fault_id(run_frame)
                 split = _tep_split(table_path, fault_id)
-                run_id = _run_id(table_path, run_index, fault_id, split)
+                run_id = _run_id(table_path, table_name, run_index, fault_id, split)
                 prepared_frame, _enum_maps, period_ns = build_prepared_frame(
                     run_frame,
                     prefix="Plant/TEP",
@@ -101,6 +96,40 @@ def _group_tep_runs(frame: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
     ]
 
 
+def _read_tep_tables(raw: Path) -> list[tuple[Path, str, pd.DataFrame]]:
+    files = _discover_tep_files(raw)
+    tables: list[tuple[Path, str, pd.DataFrame]] = []
+    for path in files:
+        suffix = path.suffix.lower()
+        if suffix == ".csv":
+            tables.append((path, path.stem, pd.read_csv(path, low_memory=False)))
+            continue
+        if suffix in {".rdata", ".rds"}:
+            try:
+                import pyreadr
+            except ImportError as exc:
+                raise PreparationError(
+                    "TEP RData/RDS preparation requires the optional 'datasets' extra "
+                    "or pyreadr>=0.5."
+                ) from exc
+            result = pyreadr.read_r(str(path))
+            for name, frame in result.items():
+                tables.append((path, str(name or path.stem), frame))
+    return tables
+
+
+def _discover_tep_files(raw: Path) -> list[Path]:
+    suffixes = {".csv", ".rdata", ".rds"}
+    if raw.is_file() and raw.suffix.lower() in suffixes:
+        return [raw]
+    if not raw.exists():
+        return discover_table_files(raw)
+    files = [path for path in raw.rglob("*") if path.is_file() and path.suffix.lower() in suffixes]
+    if not files:
+        return discover_table_files(raw)
+    return sorted(files)
+
+
 def _fault_id(frame: pd.DataFrame) -> int:
     fault_column = _find(frame, {"faultNumber", "fault_number", "fault", "Fault"})
     if fault_column is None:
@@ -116,9 +145,10 @@ def _tep_split(path: Path, fault_id: int) -> str:
     return "test"
 
 
-def _run_id(path: Path, run_index: str, fault_id: int, split: str) -> str:
+def _run_id(path: Path, table_name: str, run_index: str, fault_id: int, split: str) -> str:
     source = "train" if split == "train" else "test"
-    return f"tep/{source}/fault_{fault_id:02d}/run_{_safe_index(run_index)}_{path.stem}"
+    suffix = _safe_index(table_name if table_name != path.stem else path.stem)
+    return f"tep/{source}/fault_{fault_id:02d}/run_{_safe_index(run_index)}_{suffix}"
 
 
 def _metadata_columns(frame: pd.DataFrame) -> set[str]:

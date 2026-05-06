@@ -94,9 +94,9 @@ and Markdown cards with citations.
 This slice has no LLM provider, network, replay-suite, or referee dependency.
 It is an application workflow, not a detector or dataset plugin.
 
-## RQ3 And Reproduction Slice
+## assistant replay And Reproduction Slice
 
-The RQ3 harness is the thesis-compatible assistant experiment. It depends on
+The assistant replay harness is the thesis-compatible assistant experiment. It depends on
 ports for provider-backed generation, evidence retrieval, replay-suite storage,
 assistant run artifacts, and metric writing. `llama.cpp` is the recommended
 local reproducibility provider, while cloud providers are configured through the
@@ -109,9 +109,9 @@ flowchart LR
   C --> D["Retrieve evidence"]
   D --> E["LLMProvider"]
   E --> F["Claim/referee metrics"]
-  F --> G["RQ3 summary"]
+  F --> G["assistant replay summary"]
 ```
 
 `RunThesisReproduction` composes benchmark, evidence, XAI, optional profiling,
-and RQ3 stages in process. It writes a crosswalk that maps thesis-era artifacts
+and assistant replay stages in process. It writes a crosswalk that maps thesis-era artifacts
 to the productized contracts without importing old thesis modules.

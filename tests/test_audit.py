@@ -37,12 +37,12 @@ def test_cli_reproducibility_audit_smoke(tmp_path: Path):
         "architecture-tests",
         "reproduction-run",
         "reproduction-artifacts",
-        "rq3-preflight",
+        "assistant-preflight",
         "synthetic-thesis-setup",
     }
     synthetic_root = audit_root / "synthetic-full-reproduction" / "thesis-full-smoke"
     assert (synthetic_root / "summary.json").exists()
-    assert (synthetic_root / "summaries" / "rq3_summary.csv").exists()
+    assert (synthetic_root / "summaries" / "assistant_summary.csv").exists()
     assert "setup_recommendations" in payload
 
 

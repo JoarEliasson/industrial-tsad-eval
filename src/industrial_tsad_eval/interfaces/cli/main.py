@@ -16,6 +16,11 @@ from industrial_tsad_eval.application.acquisition import (
     ListDatasetSources,
     ValidateRawAcquisition,
 )
+from industrial_tsad_eval.application.assistant_replay import (
+    PreflightAssistantReplay,
+    RunAssistantReplaySuite,
+    SummarizeAssistantReplay,
+)
 from industrial_tsad_eval.application.audit import (
     ReproducibilityAuditConfig,
     RunReproducibilityAudit,
@@ -45,7 +50,6 @@ from industrial_tsad_eval.application.reproduction import (
     RunThesisReproduction,
     SummarizeThesisReproduction,
 )
-from industrial_tsad_eval.application.rq3 import PreflightRQ3, RunReplaySuite, SummarizeRQ3
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
@@ -63,8 +67,8 @@ from industrial_tsad_eval.infrastructure.examples import (
 )
 from industrial_tsad_eval.infrastructure.json_utils import write_json
 from industrial_tsad_eval.infrastructure.reproduction_config import (
+    load_assistant_config,
     load_reproduction_config,
-    load_rq3_config,
     write_default_reproduction_config,
     write_provider_config_template,
 )
@@ -98,7 +102,7 @@ xai_gt_map_app = typer.Typer(help="Ground-truth tag-map workflows.")
 data_app = typer.Typer(help="Raw dataset acquisition workflows.")
 operator_app = typer.Typer(help="Deterministic operator-assistant workflows.")
 operator_card_app = typer.Typer(help="Operator card workflows.")
-rq3_app = typer.Typer(help="Thesis RQ3 assistant replay workflows.")
+assistant_app = typer.Typer(help="Thesis assistant replay workflows.")
 reproduce_app = typer.Typer(help="Thesis-style reproduction workflows.")
 audit_app = typer.Typer(help="Clean-repo reproducibility audit workflows.")
 
@@ -114,7 +118,7 @@ app.add_typer(evidence_app, name="evidence")
 app.add_typer(xai_app, name="xai")
 app.add_typer(data_app, name="data")
 app.add_typer(operator_app, name="operator")
-app.add_typer(rq3_app, name="rq3")
+app.add_typer(assistant_app, name="assistant")
 app.add_typer(reproduce_app, name="reproduce")
 app.add_typer(audit_app, name="audit")
 xai_app.add_typer(xai_gt_map_app, name="gt-map")
@@ -767,9 +771,9 @@ def xai_eval(
     console.print_json(data=result.to_dict())
 
 
-@rq3_app.command("providers")
-def rq3_providers() -> None:
-    """List registered RQ3 LLM provider plugins."""
+@assistant_app.command("providers")
+def assistant_providers() -> None:
+    """List registered assistant replay LLM provider plugins."""
     registry = default_llm_provider_registry()
     table = Table("Name", "Family", "Default Model", "Base URL", "API Key", "Description")
     for name in registry.names():
@@ -785,8 +789,8 @@ def rq3_providers() -> None:
     console.print(table)
 
 
-@rq3_app.command("provider-template")
-def rq3_provider_template(
+@assistant_app.command("provider-template")
+def assistant_provider_template(
     out: Path = typer.Option(..., "--out", dir_okay=False, help="Provider TOML snippet file."),
 ) -> None:
     """Write provider configuration examples."""
@@ -797,14 +801,19 @@ def rq3_provider_template(
     console.print_json(data={"out": str(path)})
 
 
-@rq3_app.command("preflight")
-def rq3_preflight(
-    config: Path = typer.Option(..., "--config", dir_okay=False, help="RQ3 TOML config."),
+@assistant_app.command("preflight")
+def assistant_preflight(
+    config: Path = typer.Option(
+        ...,
+        "--config",
+        dir_okay=False,
+        help="assistant replay TOML config.",
+    ),
 ) -> None:
-    """Preflight an RQ3 config and provider."""
+    """Preflight an assistant replay config and provider."""
     try:
-        loaded = load_rq3_config(config)
-        result = PreflightRQ3(
+        loaded = load_assistant_config(config)
+        result = PreflightAssistantReplay(
             config=loaded,
             provider_registry=default_llm_provider_registry(),
         ).run()
@@ -815,17 +824,22 @@ def rq3_preflight(
         raise typer.Exit(1)
 
 
-@rq3_app.command("run")
-def rq3_run(
-    config: Path = typer.Option(..., "--config", dir_okay=False, help="RQ3 TOML config."),
+@assistant_app.command("run")
+def assistant_run(
+    config: Path = typer.Option(
+        ...,
+        "--config",
+        dir_okay=False,
+        help="assistant replay TOML config.",
+    ),
     benchmark: Path = typer.Option(..., "--benchmark", file_okay=False, help="Benchmark run dir."),
     evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence Bundle dir."),
-    out: Path = typer.Option(..., "--out", file_okay=False, help="RQ3 output dir."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="assistant replay output dir."),
 ) -> None:
-    """Run a thesis-style RQ3 replay suite."""
+    """Run a thesis-style assistant replay suite."""
     try:
-        loaded = load_rq3_config(config)
-        result = RunReplaySuite(
+        loaded = load_assistant_config(config)
+        result = RunAssistantReplaySuite(
             config=loaded,
             evidence=evidence,
             out=out,
@@ -839,13 +853,13 @@ def rq3_run(
         raise typer.Exit(1)
 
 
-@rq3_app.command("summarize")
-def rq3_summarize(
-    run: Path = typer.Option(..., "--run", file_okay=False, help="RQ3 run directory."),
+@assistant_app.command("summarize")
+def assistant_summarize(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="assistant replay run directory."),
 ) -> None:
-    """Print an RQ3 summary."""
+    """Print an assistant replay summary."""
     try:
-        payload = SummarizeRQ3(run).run_summary()
+        payload = SummarizeAssistantReplay(run).run_summary()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=payload)

@@ -1,26 +1,70 @@
-"""RQ3 assistant-replay contracts."""
+"""assistant replay contracts."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from industrial_tsad_eval.domain.errors import BenchmarkConfigError
 from industrial_tsad_eval.domain.llm import LLMProviderConfig
 
+THESIS_ASSISTANT_QUERY_TEMPLATE = (
+    "For dataset {dataset}, event {event_id}: summarize likely causes, first operator checks, "
+    "and immediate actions using only retrieved benchmark evidence plus retrieved public "
+    "technical-document, public operating-guidance, or response-playbook context. Tie "
+    "event-specific claims to benchmark evidence. If a retrieved public document chunk directly "
+    "states applicable OT detection, monitoring, response, documentation, or alert-handling "
+    "guidance, include one short document-grounded item using wording from that chunk, such as "
+    "detect security events and incidents when that exact wording is present. Prioritize "
+    "{top_variables}."
+)
+
+
+class DraftResponse(BaseModel):
+    """Structured planner response used by thesis-style assistant replay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symptom_summary: str = ""
+    likely_causes: list[str] = Field(default_factory=list)
+    checks: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+    escalation_criteria: list[str] = Field(default_factory=list)
+
+
+class DraftClaim(BaseModel):
+    """One extracted planner claim with deterministic evidence assignment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str
+    section: str
+    statement: str
+    cited_evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ClaimEvaluation(BaseModel):
+    """Structured referee decision for one assistant claim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_supported: bool
+    entailment_label: Literal["entails", "insufficient", "contradicts"]
+    entailment_reasoning: str
+    final_disposition: Literal["keep", "rewrite", "remove"]
+    rewritten_statement: str | None = None
+
 
 @dataclass(frozen=True)
-class RQ3Config:
+class AssistantReplayConfig:
     """Configuration for thesis-style assistant replay suites."""
 
     suite_id: str
     prepared: str
     provider: LLMProviderConfig
-    query_template: str = (
-        "For dataset {dataset}, event {event_id}: summarize likely causes, first "
-        "operator checks, and immediate actions using only cited retrieved evidence. "
-        "Prioritize {top_variables}."
-    )
+    query_template: str = THESIS_ASSISTANT_QUERY_TEMPLATE
     cases_per_dataset: int = 4
     top_k: int = 8
     minimum_supported_claims: int = 1
@@ -29,40 +73,40 @@ class RQ3Config:
     include_operator_cards: bool = False
 
     @classmethod
-    def from_mapping(cls, payload: dict[str, Any]) -> RQ3Config:
-        """Build an RQ3 config from TOML-compatible data."""
-        rq3 = _required_mapping(payload, "rq3")
-        provider_payload = _required_mapping(rq3, "provider")
-        suite_id = _string(rq3, "suite_id", "rq3-smoke")
-        prepared = _required_string(rq3, "prepared", "rq3.prepared")
-        cases_per_dataset = int(rq3.get("cases_per_dataset", 4))
-        top_k = int(rq3.get("top_k", 8))
-        minimum_supported_claims = int(rq3.get("minimum_supported_claims", 1))
-        prompt_budget_chars = int(rq3.get("prompt_budget_chars", 12000))
+    def from_mapping(cls, payload: dict[str, Any]) -> AssistantReplayConfig:
+        """Build an assistant replay config from TOML-compatible data."""
+        assistant = _required_mapping(payload, "assistant")
+        provider_payload = _required_mapping(assistant, "provider")
+        suite_id = _string(assistant, "suite_id", "assistant-smoke")
+        prepared = _required_string(assistant, "prepared", "assistant.prepared")
+        cases_per_dataset = int(assistant.get("cases_per_dataset", 4))
+        top_k = int(assistant.get("top_k", 8))
+        minimum_supported_claims = int(assistant.get("minimum_supported_claims", 1))
+        prompt_budget_chars = int(assistant.get("prompt_budget_chars", 12000))
         if cases_per_dataset <= 0:
-            raise BenchmarkConfigError("rq3.cases_per_dataset must be greater than 0.")
+            raise BenchmarkConfigError("assistant.cases_per_dataset must be greater than 0.")
         if top_k <= 0:
-            raise BenchmarkConfigError("rq3.top_k must be greater than 0.")
+            raise BenchmarkConfigError("assistant.top_k must be greater than 0.")
         if minimum_supported_claims < 0:
-            raise BenchmarkConfigError("rq3.minimum_supported_claims cannot be negative.")
+            raise BenchmarkConfigError("assistant.minimum_supported_claims cannot be negative.")
         if prompt_budget_chars <= 0:
-            raise BenchmarkConfigError("rq3.prompt_budget_chars must be greater than 0.")
+            raise BenchmarkConfigError("assistant.prompt_budget_chars must be greater than 0.")
         return cls(
             suite_id=suite_id,
             prepared=prepared,
             provider=_provider_config(provider_payload),
-            query_template=_string(rq3, "query_template", cls.query_template),
+            query_template=_string(assistant, "query_template", cls.query_template),
             cases_per_dataset=cases_per_dataset,
             top_k=top_k,
             minimum_supported_claims=minimum_supported_claims,
             prompt_budget_chars=prompt_budget_chars,
-            playbooks=_optional_string(rq3.get("playbooks")),
-            include_operator_cards=bool(rq3.get("include_operator_cards", False)),
+            playbooks=_optional_string(assistant.get("playbooks")),
+            include_operator_cards=bool(assistant.get("include_operator_cards", False)),
         )
 
-    def with_prepared(self, prepared: str) -> RQ3Config:
+    def with_prepared(self, prepared: str) -> AssistantReplayConfig:
         """Return a copy targeting a concrete prepared dataset."""
-        return RQ3Config(
+        return AssistantReplayConfig(
             suite_id=self.suite_id,
             prepared=prepared,
             provider=self.provider,
@@ -131,7 +175,7 @@ class AssistantCase:
 
 @dataclass(frozen=True)
 class ReplaySuiteManifest:
-    """Manifest for a deterministic set of RQ3 replay cases."""
+    """Manifest for a deterministic set of assistant replay cases."""
 
     suite_id: str
     cases: list[AssistantCase]
@@ -139,7 +183,7 @@ class ReplaySuiteManifest:
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
         return {
-            "format_version": "rq3-replay-suite-v1",
+            "format_version": "assistant-replay-suite-v1",
             "suite_id": self.suite_id,
             "case_count": len(self.cases),
             "cases": [case.to_dict() for case in self.cases],
@@ -175,8 +219,8 @@ class AssistantRunMetrics:
 
 
 @dataclass(frozen=True)
-class RQ3AggregateMetrics:
-    """Aggregate RQ3 metrics for a replay suite."""
+class AssistantReplayAggregateMetrics:
+    """Aggregate assistant replay metrics for a replay suite."""
 
     suite_id: str
     runs_evaluated: int
@@ -213,13 +257,13 @@ class RQ3AggregateMetrics:
 
 
 @dataclass(frozen=True)
-class RQ3RunResult:
-    """Application-level result for an RQ3 replay suite."""
+class AssistantReplayRunResult:
+    """Application-level result for an assistant replay suite."""
 
     suite_id: str
     run_dir: str
     ok: bool
-    metrics: RQ3AggregateMetrics
+    metrics: AssistantReplayAggregateMetrics
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
@@ -231,8 +275,10 @@ class RQ3RunResult:
         }
 
 
-def aggregate_rq3_metrics(suite_id: str, per_run: list[AssistantRunMetrics]) -> RQ3AggregateMetrics:
-    """Aggregate thesis-compatible RQ3 metrics."""
+def aggregate_assistant_metrics(
+    suite_id: str, per_run: list[AssistantRunMetrics]
+) -> AssistantReplayAggregateMetrics:
+    """Aggregate thesis-compatible assistant replay metrics."""
     runs_evaluated = len(per_run)
     total_claims = sum(item.total_claims for item in per_run)
     supported_claims = sum(item.supported_claims for item in per_run)
@@ -247,7 +293,7 @@ def aggregate_rq3_metrics(suite_id: str, per_run: list[AssistantRunMetrics]) -> 
     retrieval_expected = [item for item in per_run if item.retrieval_expectations_met is not None]
     abstain_expected = [item for item in per_run if item.abstain_expectation_matched is not None]
     minimum_expected = [item for item in per_run if item.minimum_supported_claim_met is not None]
-    return RQ3AggregateMetrics(
+    return AssistantReplayAggregateMetrics(
         suite_id=suite_id,
         runs_evaluated=runs_evaluated,
         total_claims=total_claims,
@@ -295,11 +341,11 @@ def aggregate_rq3_metrics(suite_id: str, per_run: list[AssistantRunMetrics]) -> 
 
 
 def _provider_config(payload: dict[str, Any]) -> LLMProviderConfig:
-    name = _required_string(payload, "name", "rq3.provider.name")
+    name = _required_string(payload, "name", "assistant.provider.name")
     model = _string(payload, "model", f"{name}-default")
     extra = payload.get("extra", {})
     if not isinstance(extra, dict):
-        raise BenchmarkConfigError("rq3.provider.extra must be a table/object.")
+        raise BenchmarkConfigError("assistant.provider.extra must be a table/object.")
     return LLMProviderConfig(
         name=name,
         model=model,

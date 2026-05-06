@@ -10,6 +10,8 @@ from industrial_tsad_eval.domain.llm import (
     LLMProviderHealth,
     LLMRequest,
     LLMResponse,
+    LLMStructuredRequest,
+    LLMStructuredResponse,
 )
 
 
@@ -25,6 +27,9 @@ class LLMProvider(Protocol):
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         """Generate a response for a chat-style request."""
+
+    def generate_json(self, request: LLMStructuredRequest) -> LLMStructuredResponse:
+        """Generate a JSON response that conforms to a named schema."""
 
 
 class LLMProviderPlugin(Protocol):

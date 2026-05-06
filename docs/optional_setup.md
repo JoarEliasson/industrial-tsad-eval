@@ -40,17 +40,19 @@ and Python allocation peaks where available.
 
 ## llama.cpp
 
-The recommended local RQ3 provider is a running llama.cpp OpenAI-compatible
-server:
+The recommended local assistant replay provider is a running llama.cpp OpenAI-compatible
+server with Qwen2.5-7B-Instruct GGUF Q4_K_M:
 
 ```powershell
+python -m pip install "llama-cpp-python[server]" huggingface_hub
 llama-server -m C:\path\to\model.gguf --host 127.0.0.1 --port 8080
-itse rq3 providers
-itse rq3 preflight --config config/thesis_full.toml
+itse assistant providers
+itse assistant preflight --config config/thesis_full.toml
 ```
 
 Success means the `llama-cpp` provider healthcheck reaches
-`http://127.0.0.1:8080/v1/models` and reports `ready`.
+`http://127.0.0.1:8080/v1/models`, reports `ready`, and assistant replay structured planner
+and referee JSON generation works through `/v1/chat/completions`.
 
 ## OpenAI-Compatible And Cloud Providers
 
@@ -59,7 +61,7 @@ Use `openai-compatible` for local/cloud endpoints that implement
 only:
 
 ```toml
-[rq3.provider]
+[assistant.provider]
 name = "openai"
 model = "gpt-4.1-mini"
 api_key_env = "OPENAI_API_KEY"

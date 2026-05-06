@@ -77,6 +77,7 @@ class HAICPPSDatasetAdapterPlugin:
             )
             events.extend(_events_from_setup(run_id, prepared_frame, setup, table_path))
 
+        runs = _align_feature_schema(runs)
         return write_prepared_dataset(
             prepared=prepared,
             dataset_name=self.dataset_name,
@@ -108,6 +109,35 @@ def _setup_label_columns(frame: pd.DataFrame) -> set[str]:
         for key, column in lowered.items()
         if key in {"label", "attack", "anomaly", "fault", "is_attack", "is_anomaly"}
     }
+
+
+def _align_feature_schema(runs: list[PreparedRun]) -> list[PreparedRun]:
+    feature_columns = sorted(
+        {str(column) for run in runs for column in run.frame.columns if str(column) != "ts_ns"}
+    )
+    aligned: list[PreparedRun] = []
+    for run in runs:
+        frame = run.frame.copy()
+        missing = [column for column in feature_columns if column not in frame.columns]
+        if missing:
+            frame = pd.concat(
+                [
+                    frame,
+                    pd.DataFrame(0.0, index=frame.index, columns=missing),
+                ],
+                axis=1,
+            )
+        frame = frame[["ts_ns", *feature_columns]].copy()
+        aligned.append(
+            PreparedRun(
+                run_id=run.run_id,
+                frame=frame,
+                split=run.split,
+                source=run.source,
+                period_ns=run.period_ns,
+            )
+        )
+    return aligned
 
 
 def _events_from_setup(

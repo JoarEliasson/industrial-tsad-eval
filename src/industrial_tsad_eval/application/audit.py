@@ -17,15 +17,22 @@ from industrial_tsad_eval.application.acquisition import (
     AcquireDatasetSource,
     ValidateRawAcquisition,
 )
+from industrial_tsad_eval.application.assistant_replay import (
+    PreflightAssistantReplay,
+    RunAssistantReplaySuite,
+)
 from industrial_tsad_eval.application.preparation import PrepareDataset
 from industrial_tsad_eval.application.reproduction import (
     PreflightThesisReproduction,
     RunThesisReproduction,
 )
-from industrial_tsad_eval.application.rq3 import PreflightRQ3, RunReplaySuite
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.domain.acquisition import DatasetSourceConfig
+from industrial_tsad_eval.domain.assistant_replay import (
+    THESIS_ASSISTANT_QUERY_TEMPLATE,
+    AssistantReplayConfig,
+)
 from industrial_tsad_eval.domain.audit import (
     AuditCheck,
     AuditRunResult,
@@ -42,12 +49,12 @@ from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
 from industrial_tsad_eval.domain.errors import ReproductionError
 from industrial_tsad_eval.domain.llm import LLMProviderConfig
 from industrial_tsad_eval.domain.reproduction import ReproductionConfig
-from industrial_tsad_eval.domain.rq3 import RQ3Config
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.examples import (
     make_opcua_fixture,
     make_thesis_raw_fixtures,
 )
+from industrial_tsad_eval.infrastructure.json_utils import read_json
 from industrial_tsad_eval.infrastructure.reproduction_config import (
     load_reproduction_config,
     render_reproduction_config_toml,
@@ -266,9 +273,9 @@ class RunReproducibilityAudit:
                         "benchmark/summary.json",
                         "summaries/detection_summary.csv",
                         "summaries/xai_summary.csv",
-                        "summaries/rq3_summary.csv",
+                        "summaries/assistant_summary.csv",
                         "summaries/thesis_crosswalk.md",
-                        "rq3/rq3_summary.json",
+                        "assistant/assistant_summary.json",
                     ],
                 ),
                 ok_predicate=lambda payload: bool(payload.get("all_present")),
@@ -276,11 +283,11 @@ class RunReproducibilityAudit:
         )
         checks.append(
             _timed_check(
-                "rq3-preflight",
+                "assistant-preflight",
                 required=True,
                 action=lambda: (
-                    PreflightRQ3(
-                        config=loaded.rq3,
+                    PreflightAssistantReplay(
+                        config=loaded.assistant,
                         provider_registry=self.provider_registry,
                     )
                     .run()
@@ -370,9 +377,9 @@ class RunReproducibilityAudit:
                 "benchmark/summary.json",
                 "summaries/detection_summary.csv",
                 "summaries/xai_summary.csv",
-                "summaries/rq3_summary.csv",
+                "summaries/assistant_summary.csv",
                 "summaries/thesis_crosswalk.md",
-                "rq3/rq3_summary.json",
+                "assistant/assistant_summary.json",
             ],
         )
         return {
@@ -460,32 +467,37 @@ class RunReproducibilityAudit:
         return _timed_check(
             "llama-cpp-smoke",
             required=False,
-            action=lambda: self._run_llama_cpp_rq3_smoke(config),
+            action=lambda: self._run_llama_cpp_assistant_smoke(config),
+            ok_predicate=lambda payload: bool(payload.get("ok")),
             warn_on_failure=True,
         )
 
-    def _run_llama_cpp_rq3_smoke(self, provider_config: Any) -> dict[str, Any]:
+    def _run_llama_cpp_assistant_smoke(self, provider_config: Any) -> dict[str, Any]:
         loaded = load_reproduction_config(self.workspace / "thesis_smoke.toml")
-        config = RQ3Config(
+        config = AssistantReplayConfig(
             suite_id="llama-cpp-smoke",
-            prepared=loaded.rq3.prepared,
+            prepared=loaded.assistant.prepared,
             provider=provider_config,
-            query_template=loaded.rq3.query_template,
+            query_template=loaded.assistant.query_template,
             cases_per_dataset=1,
-            top_k=loaded.rq3.top_k,
+            top_k=loaded.assistant.top_k,
             minimum_supported_claims=0,
-            prompt_budget_chars=loaded.rq3.prompt_budget_chars,
-            playbooks=loaded.rq3.playbooks,
+            prompt_budget_chars=loaded.assistant.prompt_budget_chars,
+            playbooks=loaded.assistant.playbooks,
         )
         evidence = next((self.audit_root / "reproduction" / "smoke-audit" / "evidence").glob("*"))
-        result = RunReplaySuite(
+        assistant_out = self.audit_root / "optional" / "llama_cpp_assistant"
+        result = RunAssistantReplaySuite(
             config=config,
             evidence=evidence,
-            out=self.audit_root / "optional" / "llama_cpp_rq3",
+            out=assistant_out,
             provider_registry=self.provider_registry,
             benchmark=self.audit_root / "reproduction" / "smoke-audit" / "benchmark",
         ).run()
-        return result.to_dict()
+        return {
+            **result.to_dict(),
+            "failed_case_logs": _failed_assistant_case_logs(assistant_out),
+        }
 
     def _thesis_full_local_preflight_check(self) -> AuditCheck:
         prepared_roots = [Path("prepared") / name for name in ("TEP", "SWaT", "HAI", "HAI_CPPS")]
@@ -533,24 +545,24 @@ def _synthetic_full_smoke_config(prepared_roots: dict[str, str]) -> Reproduction
         ],
         evaluation=BenchmarkEvaluationConfig(threshold_quantile=0.995),
     )
-    rq3 = RQ3Config(
-        suite_id="thesis-full-smoke-rq3",
+    assistant = AssistantReplayConfig(
+        suite_id="thesis-full-smoke-assistant",
         prepared=prepared_roots["tep"],
-        provider=LLMProviderConfig(name="fake", model="fake-rq3"),
+        provider=LLMProviderConfig(name="fake", model="fake-assistant"),
         cases_per_dataset=1,
         top_k=6,
         minimum_supported_claims=1,
         prompt_budget_chars=8000,
-        query_template="For {dataset} {event_id}: cite causes and checks for {top_variables}.",
+        query_template=THESIS_ASSISTANT_QUERY_TEMPLATE,
     )
     return ReproductionConfig(
         name="thesis-full-smoke",
         benchmark=benchmark,
-        rq3=rq3,
+        assistant=assistant,
         run_evidence=True,
         run_xai=True,
         run_profiles=False,
-        run_rq3=True,
+        run_assistant=True,
         xai_ks=[1, 3, 5],
     )
 
@@ -598,6 +610,15 @@ def _artifact_report(root: Path, relative_paths: list[str]) -> dict[str, Any]:
         "all_present": all(row["exists"] for row in rows),
         "artifacts": rows,
     }
+
+
+def _failed_assistant_case_logs(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for run_log in sorted((root / "runs").glob("*/run_log.json")):
+        payload = read_json(run_log)
+        if payload.get("status") == "failed":
+            rows.append({"path": str(run_log), "error": payload.get("error")})
+    return rows
 
 
 def _setup_recommendations(checks: list[AuditCheck]) -> list[AuditSetupRecommendation]:
@@ -649,8 +670,8 @@ def _setup_recommendations(checks: list[AuditCheck]) -> list[AuditSetupRecommend
                 reason=llama.message,
                 commands=[
                     ("llama-server -m C:\\path\\to\\model.gguf --host 127.0.0.1 --port 8080"),
-                    "itse rq3 providers",
-                    "itse rq3 preflight --config config/thesis_full.toml",
+                    "itse assistant providers",
+                    "itse assistant preflight --config config/thesis_full.toml",
                 ],
                 success_criteria="The llama-cpp provider healthcheck reports ready.",
             )

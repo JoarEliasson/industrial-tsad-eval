@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from industrial_tsad_eval.application.assistant_replay import (
+    PreflightAssistantReplay,
+    RunAssistantReplaySuite,
+    summary_csv_from_runs,
+)
 from industrial_tsad_eval.application.benchmark import RunBenchmark
 from industrial_tsad_eval.application.evidence import (
     BuildGroundTruthTagMap,
@@ -18,7 +23,6 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluate,
     ProfileScoreEvaluateConfig,
 )
-from industrial_tsad_eval.application.rq3 import PreflightRQ3, RunReplaySuite, summary_csv_from_runs
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
 from industrial_tsad_eval.domain.benchmark import BenchmarkExperimentResult, sanitize_run_id
@@ -42,7 +46,7 @@ class ReproductionPlan:
     name: str
     stages: list[str]
     experiment_count: int
-    rq3_provider: str
+    assistant_provider: str
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
@@ -50,7 +54,7 @@ class ReproductionPlan:
             "name": self.name,
             "stages": list(self.stages),
             "experiment_count": self.experiment_count,
-            "rq3_provider": self.rq3_provider,
+            "assistant_provider": self.assistant_provider,
         }
 
 
@@ -69,14 +73,14 @@ class PlanThesisReproduction:
             stages.append("xai")
         if self.config.run_profiles:
             stages.append("profiles")
-        if self.config.run_rq3:
-            stages.append("rq3")
+        if self.config.run_assistant:
+            stages.append("assistant")
         stages.append("summaries")
         return ReproductionPlan(
             name=self.config.name,
             stages=stages,
             experiment_count=len(self.config.benchmark.experiments()),
-            rq3_provider=self.config.rq3.provider.name,
+            assistant_provider=self.config.assistant.provider.name,
         )
 
 
@@ -88,7 +92,7 @@ class PreflightThesisReproduction:
         self.provider_registry = provider_registry
 
     def run(self) -> dict[str, Any]:
-        """Return preflight checks for datasets and RQ3 provider config."""
+        """Return preflight checks for datasets and assistant replay provider config."""
         checks: list[dict[str, Any]] = []
         for dataset in self.config.benchmark.datasets:
             report = ValidatePreparedDataset(dataset.prepared).run()
@@ -102,17 +106,17 @@ class PreflightThesisReproduction:
                     "details": report.to_dict(),
                 }
             )
-        rq3 = PreflightRQ3(
-            config=self.config.rq3,
+        assistant = PreflightAssistantReplay(
+            config=self.config.assistant,
             provider_registry=self.provider_registry,
         ).run()
-        checks.extend({"name": f"rq3:{check['name']}", **check} for check in rq3.checks)
+        checks.extend({"name": f"assistant:{check['name']}", **check} for check in assistant.checks)
         ok = not any(check["status"] == "fail" for check in checks)
         return {"ok": ok, "checks": checks}
 
 
 class RunThesisReproduction:
-    """Run benchmark, evidence, XAI, profiling, and RQ3 stages."""
+    """Run benchmark, evidence, XAI, profiling, and assistant replay stages."""
 
     def __init__(
         self,
@@ -185,7 +189,7 @@ class RunThesisReproduction:
         successful = [result for result in benchmark_result.results if result.status == "completed"]
         evidence_dirs = self._run_evidence_xai(run_root, successful, stages)
         self._run_profiles(run_root, successful, stages)
-        self._run_rq3(run_root, successful, evidence_dirs, stages)
+        self._run_assistant(run_root, successful, evidence_dirs, stages)
         self._write_summaries(run_root, benchmark_result.results, stages)
 
         ok = all(stage.status in {"completed", "skipped"} for stage in stages)
@@ -317,34 +321,34 @@ class RunThesisReproduction:
                 )
             )
 
-    def _run_rq3(
+    def _run_assistant(
         self,
         run_root: Path,
         experiments: list[BenchmarkExperimentResult],
         evidence_dirs: dict[str, Path],
         stages: list[ReproductionStageResult],
     ) -> None:
-        if not self.config.run_rq3:
-            stages.append(ReproductionStageResult("rq3", "skipped"))
+        if not self.config.run_assistant:
+            stages.append(ReproductionStageResult("assistant", "skipped"))
             return
-        rq3_rows: list[dict[str, Any]] = []
+        assistant_rows: list[dict[str, Any]] = []
         for experiment in experiments:
             evidence_dir = evidence_dirs.get(experiment.experiment_id)
             if evidence_dir is None:
                 continue
             dataset_config = _dataset_config(self.config, experiment.dataset)
-            rq3_config = self.config.rq3.with_prepared(dataset_config.prepared)
-            rq3_out = run_root / "rq3" / "experiments" / experiment.experiment_id
+            assistant_config = self.config.assistant.with_prepared(dataset_config.prepared)
+            assistant_out = run_root / "assistant" / "experiments" / experiment.experiment_id
             try:
-                result = RunReplaySuite(
-                    config=rq3_config,
+                result = RunAssistantReplaySuite(
+                    config=assistant_config,
                     evidence=evidence_dir,
-                    out=rq3_out,
+                    out=assistant_out,
                     provider_registry=self.provider_registry,
                     benchmark=run_root / "benchmark",
                 ).run()
                 summary = result.metrics.to_dict()
-                rq3_rows.append(
+                assistant_rows.append(
                     {
                         "experiment_id": experiment.experiment_id,
                         "dataset": experiment.dataset,
@@ -355,7 +359,7 @@ class RunThesisReproduction:
                 )
                 stages.append(
                     ReproductionStageResult(
-                        f"rq3:{experiment.experiment_id}",
+                        f"assistant:{experiment.experiment_id}",
                         "completed" if result.ok else "failed",
                         path=result.run_dir,
                         metrics=summary,
@@ -364,20 +368,26 @@ class RunThesisReproduction:
             except Exception as exc:
                 stages.append(
                     ReproductionStageResult(
-                        f"rq3:{experiment.experiment_id}",
+                        f"assistant:{experiment.experiment_id}",
                         "failed",
-                        path=str(rq3_out),
+                        path=str(assistant_out),
                         error=f"{type(exc).__name__}: {exc}",
                     )
                 )
         writer = LocalArtifactWriter(run_root)
         writer.write_json(
-            "rq3/rq3_summary.json",
-            {"format_version": "rq3-reproduction-summary-v1", "rows": rq3_rows},
+            "assistant/assistant_summary.json",
+            {"format_version": "assistant-reproduction-summary-v1", "rows": assistant_rows},
         )
-        writer.write_text("rq3/rq3_summary.csv", summary_csv_from_runs(rq3_rows))
-        if not rq3_rows:
-            stages.append(ReproductionStageResult("rq3", "failed", error="No RQ3 rows produced."))
+        writer.write_text("assistant/assistant_summary.csv", summary_csv_from_runs(assistant_rows))
+        if not assistant_rows:
+            stages.append(
+                ReproductionStageResult(
+                    "assistant",
+                    "failed",
+                    error="No assistant replay rows produced.",
+                )
+            )
 
     def _write_summaries(
         self,
@@ -394,10 +404,10 @@ class RunThesisReproduction:
             )
         xai_rows = _collect_xai_rows(run_root / "xai")
         writer.write_text("summaries/xai_summary.csv", _csv(xai_rows))
-        rq3_summary = run_root / "rq3" / "rq3_summary.csv"
+        assistant_summary = run_root / "assistant" / "assistant_summary.csv"
         writer.write_text(
-            "summaries/rq3_summary.csv",
-            rq3_summary.read_text(encoding="utf-8") if rq3_summary.exists() else "",
+            "summaries/assistant_summary.csv",
+            assistant_summary.read_text(encoding="utf-8") if assistant_summary.exists() else "",
         )
         writer.write_json(
             "summaries/reproducibility_matrix.json",
@@ -501,7 +511,8 @@ def _crosswalk_markdown() -> str:
 | Event metrics | Versioned evaluation policy and benchmark summaries |
 | Evidence/XAI | Evidence Bundle v1 plus deterministic XAI metrics |
 | System profiling | System preflight and profile reports |
-| RQ3 assistant evaluation | Provider-backed replay suites with claim/referee metrics |
+| assistant replay evaluation | Provider-backed replay suites with claim/referee metrics |
 
-Operator cards are optional rendering artifacts. They do not replace the RQ3 metric source.
+Operator cards are optional rendering artifacts. They do not replace the assistant replay
+metric source.
 """

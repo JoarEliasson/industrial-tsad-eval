@@ -43,7 +43,26 @@ def to_unix_ns(
             return (numeric * 1_000_000).astype(np.int64)
         return (numeric * 1_000_000_000).astype(np.int64)
 
-    parsed = pd.to_datetime(series, utc=True, errors="coerce")
+    text = series.astype(str).str.strip()
+    dayfirst_hint = text.str.contains(r"^\d{1,2}/\d{1,2}/\d{2,4}\b", regex=True).any()
+    if dayfirst_hint:
+        parsed = pd.to_datetime(
+            text,
+            utc=True,
+            errors="coerce",
+            format="%d/%m/%Y %I:%M:%S %p",
+        )
+        if parsed.isna().any():
+            parsed = pd.to_datetime(
+                text,
+                utc=True,
+                errors="coerce",
+                format="%d/%m/%Y %H:%M:%S",
+            )
+    else:
+        parsed = pd.to_datetime(text, utc=True, errors="coerce")
+    if parsed.isna().any():
+        parsed = pd.to_datetime(text, utc=True, errors="coerce", dayfirst=bool(dayfirst_hint))
     if parsed.isna().any():
         raise ValueError("Failed to parse timestamp values to UTC datetimes.")
     epoch = pd.Timestamp("1970-01-01", tz="UTC")

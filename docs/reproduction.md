@@ -30,7 +30,7 @@ HAI_CPPS. Raw data and credentials are never vendored.
 - evidence generation
 - XAI evaluation
 - optional profiling
-- RQ3 replay suites
+- assistant replay suites
 - summary aggregation and thesis crosswalk generation
 
 Use:
@@ -54,14 +54,17 @@ itse reproduce summarize --run out/reproduction/smoke
   evidence/
   xai/
   profiles/
-  rq3/
+  assistant/
   summaries/
     detection_summary.csv
     xai_summary.csv
-    rq3_summary.csv
+    assistant_summary.csv
     reproducibility_matrix.json
     thesis_crosswalk.md
 ```
 
-The RQ3 provider defaults to `llama-cpp` in the full profile and `fake` in the
-smoke profile. The fake provider is for CI and quick contract checks only.
+The assistant replay provider defaults to `llama-cpp` in the full profile and `fake` in the
+smoke profile. The full profile expects Qwen2.5-7B-Instruct GGUF Q4_K_M served
+through llama.cpp at `http://127.0.0.1:8080/v1`. The older vLLM Qwen setup is a
+historical baseline context, not the default path. The fake provider is for CI
+and quick contract checks only.

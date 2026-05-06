@@ -28,6 +28,24 @@ def test_public_repo_has_no_personal_review_meta_wording():
     assert offenders == []
 
 
+def test_public_repo_uses_neutral_assistant_replay_language():
+    forbidden = ["rq" + "3"]
+    roots = [
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs",
+        PROJECT_ROOT / "src",
+        PROJECT_ROOT / "tests",
+    ]
+    offenders: list[str] = []
+    for path in _text_files(roots):
+        relative = str(path.relative_to(PROJECT_ROOT)).lower()
+        text = path.read_text(encoding="utf-8").lower()
+        if any(term in relative or term in text for term in forbidden):
+            offenders.append(str(path.relative_to(PROJECT_ROOT)))
+
+    assert offenders == []
+
+
 def test_cli_dependencies_do_not_leak_outside_cli_package():
     offenders: list[str] = []
     for path in _python_files():

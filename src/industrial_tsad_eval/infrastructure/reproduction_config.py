@@ -1,17 +1,20 @@
-"""TOML configuration I/O for thesis-style reproduction and RQ3."""
+"""TOML configuration I/O for thesis-style reproduction and assistant replay."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+from industrial_tsad_eval.domain.assistant_replay import (
+    THESIS_ASSISTANT_QUERY_TEMPLATE,
+    AssistantReplayConfig,
+)
 from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
     BenchmarkDatasetConfig,
     BenchmarkDetectorConfig,
 )
 from industrial_tsad_eval.domain.reproduction import ReproductionConfig
-from industrial_tsad_eval.domain.rq3 import RQ3Config
 
 try:
     import tomllib
@@ -19,12 +22,16 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback.
     import tomli as tomllib
 
 
+THESIS_ASSISTANT_QUERY_TOML = THESIS_ASSISTANT_QUERY_TEMPLATE.replace("\\", "\\\\").replace(
+    '"', '\\"'
+)
+
 THESIS_SMOKE_CONFIG_TOML = """[reproduction]
 name = "thesis-smoke"
 run_evidence = true
 run_xai = true
 run_profiles = false
-run_rq3 = true
+run_assistant = true
 xai_ks = [1, 3, 5]
 
 [benchmark]
@@ -43,19 +50,19 @@ id = "forecast-ridge-smoke"
 name = "forecast-ridge"
 parameters = { window = 24, stride = 4, lags = 1, alpha = 1.0, standardize = true, seed = 1337 }
 
-[rq3]
-suite_id = "thesis-smoke-rq3"
+[assistant]
+suite_id = "thesis-smoke-assistant"
 prepared = "examples/generated/OPCUA_SYNTH"
 cases_per_dataset = 2
 top_k = 6
 minimum_supported_claims = 1
 prompt_budget_chars = 8000
-query_template = "For {dataset} {event_id}: cite causes and checks for {top_variables}."
+query_template = "__THESIS_assistant replay_QUERY__"
 
-[rq3.provider]
+[assistant.provider]
 name = "fake"
-model = "fake-rq3"
-"""
+model = "fake-assistant"
+""".replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
 
 
 THESIS_FULL_CONFIG_TOML = """[reproduction]
@@ -63,7 +70,7 @@ name = "thesis-full"
 run_evidence = true
 run_xai = true
 run_profiles = true
-run_rq3 = true
+run_assistant = true
 xai_ks = [1, 3, 5]
 
 [benchmark]
@@ -99,32 +106,32 @@ id = "drcad"
 name = "drcad"
 parameters = { window = 32, patch_size = 8, epochs = 5, device = "auto" }
 
-[rq3]
-suite_id = "thesis-rq3-all-datasets"
+[assistant]
+suite_id = "thesis-assistant-all-datasets"
 prepared = "prepared/TEP"
 cases_per_dataset = 4
 top_k = 8
 minimum_supported_claims = 1
 prompt_budget_chars = 12000
-query_template = "For {dataset} {event_id}: cite causes and checks for {top_variables}."
+query_template = "__THESIS_assistant replay_QUERY__"
 
-[rq3.provider]
+[assistant.provider]
 name = "llama-cpp"
-model = "local-llama"
+model = "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
 base_url = "http://127.0.0.1:8080/v1"
 temperature = 0.0
 top_p = 1.0
 max_tokens = 700
 seed = 1337
-"""
+""".replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
 
 
-PROVIDER_CONFIG_TOML = """# Provider examples for RQ3 assistant replay.
+PROVIDER_CONFIG_TOML = """# Provider examples for assistant replay.
 
-[rq3.provider]
+[assistant.provider]
 # Recommended thesis-reproducibility path: run llama.cpp with an OpenAI-compatible server.
 name = "llama-cpp"
-model = "local-llama"
+model = "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
 base_url = "http://127.0.0.1:8080/v1"
 temperature = 0.0
 top_p = 1.0
@@ -158,12 +165,12 @@ def load_reproduction_config(path: str | Path) -> ReproductionConfig:
     return _resolve_reproduction_paths(config, config_path.parent)
 
 
-def load_rq3_config(path: str | Path) -> RQ3Config:
-    """Load and validate an RQ3 TOML config."""
+def load_assistant_config(path: str | Path) -> AssistantReplayConfig:
+    """Load and validate an assistant replay TOML config."""
     config_path = Path(path)
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    config = RQ3Config.from_mapping(payload)
-    return _resolve_rq3_paths(config, config_path.parent)
+    config = AssistantReplayConfig.from_mapping(payload)
+    return _resolve_assistant_paths(config, config_path.parent)
 
 
 def write_default_reproduction_config(path: str | Path, profile: str = "thesis-smoke") -> Path:
@@ -196,32 +203,32 @@ def render_reproduction_config_toml(config: ReproductionConfig) -> str:
         f"run_evidence = {_bool(config.run_evidence)}",
         f"run_xai = {_bool(config.run_xai)}",
         f"run_profiles = {_bool(config.run_profiles)}",
-        f"run_rq3 = {_bool(config.run_rq3)}",
+        f"run_assistant = {_bool(config.run_assistant)}",
         "xai_ks = [" + ", ".join(str(item) for item in config.xai_ks) + "]",
         "",
         *_benchmark_lines(config.benchmark),
         "",
-        *_rq3_lines(config.rq3),
+        *_assistant_lines(config.assistant),
     ]
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_rq3_config_toml(config: RQ3Config) -> str:
-    """Render an RQ3 config for artifact capture."""
-    return "\n".join(_rq3_lines(config)).rstrip() + "\n"
+def render_assistant_config_toml(config: AssistantReplayConfig) -> str:
+    """Render an assistant replay config for artifact capture."""
+    return "\n".join(_assistant_lines(config)).rstrip() + "\n"
 
 
 def _resolve_reproduction_paths(config: ReproductionConfig, base_dir: Path) -> ReproductionConfig:
     benchmark = _resolve_benchmark_paths(config.benchmark, base_dir)
-    rq3 = _resolve_rq3_paths(config.rq3, base_dir)
+    assistant = _resolve_assistant_paths(config.assistant, base_dir)
     return ReproductionConfig(
         name=config.name,
         benchmark=benchmark,
-        rq3=rq3,
+        assistant=assistant,
         run_evidence=config.run_evidence,
         run_xai=config.run_xai,
         run_profiles=config.run_profiles,
-        run_rq3=config.run_rq3,
+        run_assistant=config.run_assistant,
         xai_ks=list(config.xai_ks),
     )
 
@@ -249,11 +256,13 @@ def _resolve_benchmark_paths(config: BenchmarkConfig, base_dir: Path) -> Benchma
     )
 
 
-def _resolve_rq3_paths(config: RQ3Config, base_dir: Path) -> RQ3Config:
+def _resolve_assistant_paths(
+    config: AssistantReplayConfig, base_dir: Path
+) -> AssistantReplayConfig:
     playbooks = (
         str(_resolve_path(config.playbooks, base_dir)) if config.playbooks is not None else None
     )
-    return RQ3Config(
+    return AssistantReplayConfig(
         suite_id=config.suite_id,
         prepared=str(_resolve_path(config.prepared, base_dir)),
         provider=config.provider,
@@ -306,9 +315,9 @@ def _benchmark_lines(config: BenchmarkConfig) -> list[str]:
     return lines
 
 
-def _rq3_lines(config: RQ3Config) -> list[str]:
+def _assistant_lines(config: AssistantReplayConfig) -> list[str]:
     lines = [
-        "[rq3]",
+        "[assistant]",
         f'suite_id = "{_toml_string(config.suite_id)}"',
         f'prepared = "{_toml_string(config.prepared)}"',
         f"cases_per_dataset = {config.cases_per_dataset}",
@@ -322,7 +331,7 @@ def _rq3_lines(config: RQ3Config) -> list[str]:
     lines.extend(
         [
             "",
-            "[rq3.provider]",
+            "[assistant.provider]",
             f'name = "{_toml_string(config.provider.name)}"',
             f'model = "{_toml_string(config.provider.model)}"',
         ]

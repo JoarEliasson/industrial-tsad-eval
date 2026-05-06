@@ -1,4 +1,4 @@
-"""Filesystem repositories for RQ3 replay artifacts."""
+"""Filesystem repositories for assistant replay artifacts."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ import io
 from pathlib import Path
 from typing import Any
 
-from industrial_tsad_eval.domain.rq3 import (
+from industrial_tsad_eval.domain.assistant_replay import (
     AssistantCase,
+    AssistantReplayAggregateMetrics,
     AssistantRunMetrics,
     ReplaySuiteManifest,
-    RQ3AggregateMetrics,
 )
 from industrial_tsad_eval.infrastructure.json_utils import read_json, write_json, write_jsonl
 
 
 class LocalReplaySuiteRepository:
-    """Read and write RQ3 replay suite case artifacts."""
+    """Read and write assistant replay suite case artifacts."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -48,7 +48,7 @@ class LocalReplaySuiteRepository:
 
 
 class LocalAssistantRunRepository:
-    """Write per-case RQ3 run artifacts."""
+    """Write per-case assistant replay run artifacts."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -79,21 +79,23 @@ class LocalAssistantRunRepository:
         response_path.write_text(rendered_response, encoding="utf-8")
 
 
-class LocalRQ3MetricsRepository:
-    """Read and write aggregate RQ3 metrics."""
+class LocalAssistantReplayMetricsRepository:
+    """Read and write aggregate assistant replay metrics."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
 
-    def write_summary(self, metrics: RQ3AggregateMetrics) -> None:
+    def write_summary(self, metrics: AssistantReplayAggregateMetrics) -> None:
         """Write JSON and CSV summary artifacts."""
-        write_json(self.root / "rq3_summary.json", metrics.to_dict())
-        (self.root / "rq3_summary.csv").parent.mkdir(parents=True, exist_ok=True)
-        (self.root / "rq3_summary.csv").write_text(_metrics_csv(metrics.per_run), encoding="utf-8")
+        write_json(self.root / "assistant_summary.json", metrics.to_dict())
+        (self.root / "assistant_summary.csv").parent.mkdir(parents=True, exist_ok=True)
+        (self.root / "assistant_summary.csv").write_text(
+            _metrics_csv(metrics.per_run), encoding="utf-8"
+        )
 
     def read_summary(self) -> dict[str, Any]:
         """Read the JSON summary artifact."""
-        return read_json(self.root / "rq3_summary.json")
+        return read_json(self.root / "assistant_summary.json")
 
 
 def _metrics_csv(rows: list[AssistantRunMetrics]) -> str:

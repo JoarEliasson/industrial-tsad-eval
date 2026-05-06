@@ -3,7 +3,7 @@
 Plugins extend the toolkit without changing application workflows.
 
 Operator cards are not plugins. They are deterministic application services
-over Evidence Bundle v1 and optional local Markdown playbooks. Thesis RQ3
+over Evidence Bundle v1 and optional local Markdown playbooks. Thesis assistant replay
 assistant replay uses provider plugins behind the `LLMProvider` port.
 
 ## Dataset Source Plugins
@@ -116,10 +116,10 @@ python -m pip install -e ".[datasets]"
 
 ## LLM Provider Plugins
 
-Provider plugins serve RQ3 assistant replay. A plugin provides:
+Provider plugins serve assistant replay. A plugin provides:
 
 - stable `name`, such as `llama-cpp`
-- provider metadata for `itse rq3 providers`
+- provider metadata for `itse assistant providers`
 - `default_config()`
 - `create(config)` returning an `LLMProvider`
 

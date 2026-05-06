@@ -114,13 +114,13 @@ cards/<safe_event_id>/operator_card.md
 escalation criteria, citations, diagnostics, and provenance. `answered` cards
 must carry citations. `abstained` cards must carry an abstention reason.
 
-## RQ3 Replay Artifacts v1
+## assistant replay Replay Artifacts v1
 
-RQ3 replay suites preserve the assistant-evaluation contract used for
+assistant replay suites preserve the assistant-evaluation contract used for
 thesis-style reproduction:
 
 ```text
-<rq3_out>/
+<assistant_out>/
   cases/<case_id>/case.json
   cases/index.jsonl
   suites/suite_manifest.json
@@ -132,12 +132,12 @@ thesis-style reproduction:
     referee_output.json
     run_log.json
     rendered_response.md
-  rq3_summary.json
-  rq3_summary.csv
+  assistant_summary.json
+  assistant_summary.csv
 ```
 
 `case.json` stores event identity, query text, expected retrieval event ids, and
-minimum supported-claim expectations. `rq3_summary.json` stores
+minimum supported-claim expectations. `assistant_summary.json` stores
 thesis-compatible claim/citation proxy metrics.
 
 ## Dataset Adapter Contract
