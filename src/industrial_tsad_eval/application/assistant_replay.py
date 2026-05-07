@@ -41,6 +41,18 @@ from industrial_tsad_eval.plugins.providers import LLMProviderRegistry
 CLAIM_RE = re.compile(r"(?:^|\n)\s*(?:[-*]|\d+[.)])?\s*([^\n]+)")
 CITATION_RE = re.compile(r"\[(C\d+)\]")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_:/.-]+")
+CHECK_TARGET_RE = re.compile(
+    r"^\s*(?:check|inspect|verify|review|monitor)\s+([A-Za-z0-9_:/.-]+)",
+    re.IGNORECASE,
+)
+TAG_ROLE_PRIORITY = {
+    "top_variables": 0,
+    "overview": 1,
+    "local_rankings": 2,
+    "time_windows": 3,
+    "score_context": 4,
+    "provenance": 5,
+}
 PLANNER_SYSTEM_PROMPT = """You are the Planner for an operator-facing industrial assistant.
 
 Return JSON matching DraftResponse only.
@@ -78,6 +90,8 @@ Rules:
 - entailment_label must be one of: entails, insufficient, contradicts.
 - final_disposition must be one of: keep, rewrite, remove.
 - keep only if the claim is directly supported as written.
+- A conservative checks claim of the form "Check <tag>" is directly supported when the cited evidence or supporting_facts lists that exact tag as a top variable or matched evidence target.
+- Broader recommended actions, escalation criteria, causes, or status claims still require direct textual support in cited evidence.
 - rewrite only if a narrower statement is directly supported and remains valid for the claim's section semantics.
 - remove if unsupported or contradicted.
 - rewritten_statement must be null unless final_disposition is rewrite.
@@ -252,7 +266,10 @@ class RunAssistantCase:
         )
         planner_response = provider.generate_json(planner_request)
         draft = DraftResponse.model_validate(planner_response.payload)
-        claims = _claims_from_draft(draft, retrieval)
+        claims, citation_diagnostics = _claims_from_draft_with_diagnostics(
+            draft,
+            retrieval,
+        )
         claim_evaluations: list[ClaimEvaluation] = []
         referee_requests: list[dict[str, Any]] = []
         referee_responses: list[dict[str, Any]] = []
@@ -282,6 +299,7 @@ class RunAssistantCase:
             "format_version": "assistant-planner-output-v1",
             "draft_response": draft.model_dump(),
             "claims": evaluation["claims"],
+            "citation_selection": citation_diagnostics,
         }
         referee_output = {
             "format_version": "assistant-referee-output-v1",
@@ -297,6 +315,7 @@ class RunAssistantCase:
             "model": self.config.provider.model,
             "retrieval_hit_count": len(retrieval.hits),
             "planner_claim_count": evaluation["metrics"].total_claims,
+            "citation_selection_count": len(citation_diagnostics),
             "abstain_flag": evaluation["metrics"].abstain_flag,
         }
         repository.write_case_run(
@@ -655,6 +674,15 @@ def _claims_from_draft(
     draft: DraftResponse,
     retrieval: OperatorRetrievalResult,
 ) -> list[DraftClaim]:
+    """Extract claims and assign evidence citations."""
+    claims, _diagnostics = _claims_from_draft_with_diagnostics(draft, retrieval)
+    return claims
+
+
+def _claims_from_draft_with_diagnostics(
+    draft: DraftResponse,
+    retrieval: OperatorRetrievalResult,
+) -> tuple[list[DraftClaim], list[dict[str, Any]]]:
     rows: list[tuple[str, str]] = []
     if draft.symptom_summary.strip():
         rows.append(("symptom_summary", draft.symptom_summary.strip()))
@@ -667,30 +695,101 @@ def _claims_from_draft(
         rows.extend((section, item.strip()) for item in items if item.strip())
 
     claims: list[DraftClaim] = []
+    diagnostics: list[dict[str, Any]] = []
     hit_ids = {hit.citation_id for hit in retrieval.hits}
     for index, (section, statement) in enumerate(rows, start=1):
         explicit = [citation for citation in CITATION_RE.findall(statement) if citation in hit_ids]
-        citations = explicit or _select_citations(statement, retrieval)
-        claims.append(
-            DraftClaim(
+        clean_statement = CITATION_RE.sub("", statement).strip()
+        if explicit:
+            citations = explicit
+            diagnostic = {
+                "claim_id": f"claim-{index}",
+                "mode": "explicit",
+                "statement": clean_statement,
+                "selected_citations": citations,
+                "matched_tags": sorted(_tag_tokens(clean_statement)),
+                "candidates": [],
+            }
+        else:
+            citations, diagnostic = _select_citations_with_diagnostics(
+                clean_statement,
+                retrieval,
                 claim_id=f"claim-{index}",
-                section=section,
-                statement=CITATION_RE.sub("", statement).strip(),
-                cited_evidence_ids=citations,
             )
+        claim = DraftClaim(
+            claim_id=f"claim-{index}",
+            section=section,
+            statement=clean_statement,
+            cited_evidence_ids=citations,
         )
-    return claims
+        claims.append(claim)
+        diagnostics.append({**diagnostic, "section": section})
+    return claims, diagnostics
 
 
 def _select_citations(statement: str, retrieval: OperatorRetrievalResult) -> list[str]:
+    """Select citations for a claim statement."""
+    citations, _diagnostics = _select_citations_with_diagnostics(statement, retrieval)
+    return citations
+
+
+def _select_citations_with_diagnostics(
+    statement: str,
+    retrieval: OperatorRetrievalResult,
+    *,
+    claim_id: str | None = None,
+) -> tuple[list[str], dict[str, Any]]:
     statement_tokens = _tokens(statement)
-    ranked: list[tuple[float, int, str]] = []
+    statement_tags = _tag_tokens(statement)
+    candidates: list[dict[str, Any]] = []
     for hit in retrieval.hits:
-        overlap = len(statement_tokens & _tokens(" ".join([hit.title, hit.role, hit.text])))
-        score = float(overlap) + float(hit.score)
-        ranked.append((score, -hit.rank, hit.citation_id))
-    ranked.sort(reverse=True)
-    return [ranked[0][2]] if ranked else []
+        hit_text = " ".join(
+            [hit.title, hit.role, hit.text, json.dumps(hit.metadata, sort_keys=True)]
+        )
+        hit_tokens = _tokens(hit_text)
+        hit_tags = _tag_tokens(hit_text)
+        matched_tags = sorted(statement_tags & hit_tags)
+        overlap = len(statement_tokens & hit_tokens)
+        role_priority = TAG_ROLE_PRIORITY.get(hit.role, 20)
+        direct_tag_match = bool(matched_tags)
+        candidates.append(
+            {
+                "citation_id": hit.citation_id,
+                "role": hit.role,
+                "rank": hit.rank,
+                "retrieval_score": hit.score,
+                "matched_tags": matched_tags,
+                "token_overlap": overlap,
+                "direct_tag_match": direct_tag_match,
+                "role_priority": role_priority,
+                "sort_key": (
+                    1 if direct_tag_match else 0,
+                    -role_priority,
+                    overlap,
+                    float(hit.score),
+                    -hit.rank,
+                ),
+            }
+        )
+
+    direct = [candidate for candidate in candidates if candidate["direct_tag_match"]]
+    selected_pool = direct or candidates
+    selected_pool.sort(key=lambda item: item["sort_key"], reverse=True)
+    max_citations = 3 if direct else 1
+    selected = [str(item["citation_id"]) for item in selected_pool[:max_citations]]
+    diagnostics = {
+        "claim_id": claim_id,
+        "mode": "direct_tag_match" if direct else "token_overlap",
+        "statement": statement,
+        "check_target": _check_target(statement),
+        "matched_tags": sorted(statement_tags),
+        "selected_citations": selected,
+        "candidates": [
+            {key: value for key, value in candidate.items() if key != "sort_key"}
+            for candidate in sorted(candidates, key=lambda item: item["sort_key"], reverse=True)
+        ],
+    }
+    return selected, diagnostics
 
 
 def _referee_request_for_claim(
@@ -706,10 +805,12 @@ def _referee_request_for_claim(
         for citation in claim.cited_evidence_ids
         if citation in hit_by_id
     ]
+    supporting_facts = _supporting_facts_for_claim(claim, cited_hits)
     payload = {
         "case": case.to_dict(),
         "claim": claim.model_dump(),
         "cited_evidence": cited_hits,
+        "supporting_facts": supporting_facts,
     }
     return LLMStructuredRequest(
         messages=[
@@ -725,6 +826,42 @@ def _referee_request_for_claim(
             "suite_id": config.suite_id,
         },
     )
+
+
+def _supporting_facts_for_claim(
+    claim: DraftClaim,
+    cited_hits: list[dict[str, Any]],
+) -> dict[str, Any]:
+    claim_tags = _tag_tokens(claim.statement)
+    matches: list[dict[str, Any]] = []
+    for hit in cited_hits:
+        hit_text = " ".join(
+            [
+                str(hit.get("title", "")),
+                str(hit.get("role", "")),
+                str(hit.get("text", "")),
+                json.dumps(hit.get("metadata", {}), sort_keys=True),
+            ]
+        )
+        matched_tags = sorted(claim_tags & _tag_tokens(hit_text))
+        if matched_tags:
+            matches.append(
+                {
+                    "citation_id": str(hit.get("citation_id", "")),
+                    "role": str(hit.get("role", "")),
+                    "matched_tags": matched_tags,
+                    "source_type": str(hit.get("source_type", "")),
+                }
+            )
+    return {
+        "bounded_variable_inspection": _is_bounded_variable_inspection(claim),
+        "check_target": _check_target(claim.statement),
+        "claim_tags": sorted(claim_tags),
+        "matched_citations": matches,
+        "exact_top_variable_citations": [
+            match["citation_id"] for match in matches if match["role"] == "top_variables"
+        ],
+    }
 
 
 def _render_draft_response(draft: DraftResponse, claims: list[DraftClaim]) -> str:
@@ -807,7 +944,29 @@ def _abstained(text: str, total_claims: int) -> bool:
 
 
 def _tokens(text: str) -> set[str]:
-    return {token.lower() for token in TOKEN_RE.findall(text) if token.strip()}
+    return {
+        normalized for token in TOKEN_RE.findall(text) if (normalized := _normalize_token(token))
+    }
+
+
+def _tag_tokens(text: str) -> set[str]:
+    return {token for token in _tokens(text) if "/" in token or token.startswith("plant")}
+
+
+def _normalize_token(token: str) -> str:
+    normalized = token.strip().strip(".,;:!?)]}\"'`").strip("([{\"'`").lower()
+    return normalized
+
+
+def _check_target(statement: str) -> str | None:
+    match = CHECK_TARGET_RE.match(statement)
+    if match is None:
+        return None
+    return _normalize_token(match.group(1))
+
+
+def _is_bounded_variable_inspection(claim: DraftClaim) -> bool:
+    return claim.section == "checks" and _check_target(claim.statement) is not None
 
 
 def _ratio(numerator: int | float, denominator: int | float) -> float:

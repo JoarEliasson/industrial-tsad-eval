@@ -7,7 +7,11 @@ from threading import Thread
 
 from typer.testing import CliRunner
 
-from industrial_tsad_eval.application.assistant_replay import RunAssistantReplaySuite
+from industrial_tsad_eval.application.assistant_replay import (
+    RunAssistantReplaySuite,
+    _claims_from_draft,
+    _referee_request_for_claim,
+)
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.evidence import GenerateEvidence
 from industrial_tsad_eval.application.scoring import ScoreRuns
@@ -22,6 +26,11 @@ from industrial_tsad_eval.domain.llm import (
     LLMProviderConfig,
     LLMRequest,
     LLMStructuredRequest,
+)
+from industrial_tsad_eval.domain.operator import (
+    OperatorEvidenceHit,
+    OperatorQuery,
+    OperatorRetrievalResult,
 )
 from industrial_tsad_eval.infrastructure.reproduction_config import (
     load_assistant_config,
@@ -231,6 +240,40 @@ def test_invalid_structured_payload_still_fails_pydantic_validation():
         raise AssertionError("Invalid DraftResponse payload unexpectedly validated.")
 
 
+def test_check_tag_citation_selection_prefers_top_variable_exact_match():
+    retrieval = _tag_retrieval_result("Plant/TEP/XMV_09")
+    draft = DraftResponse(checks=["Check Plant/TEP/XMV_09."])
+
+    claims = _claims_from_draft(draft, retrieval)
+
+    assert claims[0].statement == "Check Plant/TEP/XMV_09."
+    assert claims[0].cited_evidence_ids[:2] == ["C1", "C5"]
+    assert "C2" not in claims[0].cited_evidence_ids
+
+
+def test_referee_request_includes_supporting_facts_for_exact_tag_checks():
+    retrieval = _tag_retrieval_result("Plant/HAI/P1/FT02")
+    claim = _claims_from_draft(
+        DraftResponse(checks=["Check Plant/HAI/P1/FT02"]),
+        retrieval,
+    )[0]
+    request = _referee_request_for_claim(
+        case=_assistant_case("HAI", "hai-event"),
+        claim=claim,
+        retrieval=retrieval,
+        config=AssistantReplayConfig(
+            suite_id="supporting-facts",
+            prepared="prepared/HAI",
+            provider=LLMProviderConfig(name="fake", model="fake-assistant"),
+        ),
+    )
+    payload = json.loads(request.messages[1].content)
+
+    assert payload["supporting_facts"]["bounded_variable_inspection"] is True
+    assert payload["supporting_facts"]["check_target"] == "plant/hai/p1/ft02"
+    assert payload["supporting_facts"]["exact_top_variable_citations"] == ["C1"]
+
+
 def test_failed_assistant_case_writes_diagnostic_artifacts(tmp_path: Path, opcua_prepared: Path):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _InvalidStructuredStubHandler)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -436,6 +479,69 @@ model = "fake-assistant"
         encoding="utf-8",
     )
     return path
+
+
+def _assistant_case(dataset: str, event_id: str):
+    from industrial_tsad_eval.domain.assistant_replay import AssistantCase
+
+    return AssistantCase(
+        case_id=f"{dataset}__{event_id}",
+        dataset=dataset,
+        run_id=f"{dataset.lower()}/test/run_001",
+        event_id=event_id,
+        query=f"Check {event_id}",
+        top_variables=[],
+        evidence_relative_path="bundles/run/event/evidence.json",
+        expected_retrieval_event_ids=[event_id],
+    )
+
+
+def _tag_retrieval_result(tag: str) -> OperatorRetrievalResult:
+    return OperatorRetrievalResult(
+        query=OperatorQuery(query=f"Check {tag}.", dataset="fixture", event_id="event-1"),
+        hits=[
+            OperatorEvidenceHit(
+                source_id="evidence::event-1::top_variables",
+                source_type="evidence_bundle",
+                title="Evidence Bundle: event-1",
+                role="top_variables",
+                rank=1,
+                score=1.0,
+                text=f"Top ranked variables for event event-1: {tag}, Plant/FIXTURE/OTHER.",
+                citation_id="C1",
+                dataset="fixture",
+                event_id="event-1",
+                run_id="fixture/test/run_001",
+                metadata={"top_variables": [tag, "Plant/FIXTURE/OTHER"]},
+            ),
+            OperatorEvidenceHit(
+                source_id="evidence::event-1::score_context",
+                source_type="evidence_bundle",
+                title="Evidence Bundle: event-1",
+                role="score_context",
+                rank=2,
+                score=2.0,
+                text="Score context for event event-1: high score.",
+                citation_id="C2",
+                dataset="fixture",
+                event_id="event-1",
+                run_id="fixture/test/run_001",
+            ),
+            OperatorEvidenceHit(
+                source_id="evidence::event-1::local_rankings",
+                source_type="evidence_bundle",
+                title="Evidence Bundle: event-1",
+                role="local_rankings",
+                rank=5,
+                score=0.5,
+                text=f"Local variable rankings for event event-1 include {tag}.",
+                citation_id="C5",
+                dataset="fixture",
+                event_id="event-1",
+                run_id="fixture/test/run_001",
+            ),
+        ],
+    )
 
 
 def _replace_config_path(path: Path, placeholder: str, prepared: Path) -> None:

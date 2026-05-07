@@ -71,9 +71,13 @@ def test_swat_real_slash_timestamp_format_prepares(tmp_path: Path):
     raw.mkdir()
     normal = pd.DataFrame(
         {
-            "Timestamp": ["28/12/2015 10:00:01 AM", "28/12/2015 10:00:00 AM"],
-            "FIT101": [1.1, 1.0],
-            "Normal/Attack": ["Normal", "Normal"],
+            "Timestamp": [
+                "28/12/2015 10:00:01 AM",
+                "28/12/2015 10:00:00 AM",
+                "28/12/2015 10:00:00 AM",
+            ],
+            "FIT101": [1.1, 1.0, 1.05],
+            "Normal/Attack": ["Normal", "Normal", "Normal"],
         }
     )
     attack = pd.DataFrame(
@@ -97,7 +101,9 @@ def test_swat_real_slash_timestamp_format_prepares(tmp_path: Path):
         out=tmp_path / "prepared",
     ).run()
 
-    assert ValidatePreparedDataset(result.prepared_path).run().ok
+    report = ValidatePreparedDataset(result.prepared_path).run()
+    assert report.ok
+    assert not any("duplicate timestamps" in warning for warning in report.warnings)
     assert result.event_count == 1
 
 

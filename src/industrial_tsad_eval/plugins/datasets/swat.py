@@ -74,6 +74,7 @@ class SWaTDatasetAdapterPlugin:
                 exclude_columns=exclude,
                 base_offset_rows=index * 100_000,
             )
+            prepared_frame = _make_timestamps_strictly_increasing(prepared_frame)
             runs.append(
                 PreparedRun(
                     run_id=run_id,
@@ -115,6 +116,18 @@ def _sort_by_timestamp(table: pd.DataFrame) -> pd.DataFrame:
         .drop(columns=["__itse_ts_sort"])
         .reset_index(drop=True)
     )
+
+
+def _make_timestamps_strictly_increasing(frame: pd.DataFrame) -> pd.DataFrame:
+    timestamps = frame["ts_ns"].to_numpy(dtype=np.int64, copy=True)
+    if len(timestamps) < 2 or np.all(np.diff(timestamps) > 0):
+        return frame
+    for index in range(1, len(timestamps)):
+        if timestamps[index] <= timestamps[index - 1]:
+            timestamps[index] = timestamps[index - 1] + 1
+    adjusted = frame.copy()
+    adjusted["ts_ns"] = timestamps
+    return adjusted
 
 
 def _events_from_labels(
