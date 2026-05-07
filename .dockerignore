@@ -1,0 +1,33 @@
+.git
+.idea
+.mypy_cache
+.pytest_cache
+.pytest_tmp
+.ruff_cache
+.test-output
+__pycache__
+*.py[cod]
+*.egg-info
+
+.venv
+venv
+build
+dist
+
+# Runtime data and outputs are mounted into the container, never copied.
+config/*.local.toml
+data
+prepared
+out
+scores
+examples/generated
+
+# Never include raw data, credentials, or model weights in the image context.
+*.env
+.env
+*.gguf
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
