@@ -398,6 +398,7 @@ def test_reproduction_config_and_cli_smoke_run(tmp_path: Path, opcua_prepared: P
             str(tmp_path / "repro"),
             "--run-id",
             "smoke",
+            "--no-progress",
         ],
     )
     assert run.exit_code == 0, run.output
@@ -405,8 +406,30 @@ def test_reproduction_config_and_cli_smoke_run(tmp_path: Path, opcua_prepared: P
     assert (run_root / "benchmark" / "summary.json").exists()
     assert (run_root / "assistant" / "assistant_summary.json").exists()
     assert (run_root / "summaries" / "thesis_crosswalk.md").exists()
+    assert (run_root / "progress_snapshot.json").exists()
+    status = runner.invoke(app, ["reproduce", "status", "--run", str(run_root)])
+    assert status.exit_code == 0, status.output
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["ok"] is True
+
+
+def test_reproduction_cli_writes_verification_profile(tmp_path: Path):
+    config_path = tmp_path / "verification.toml"
+
+    result = runner.invoke(
+        app,
+        [
+            "reproduce",
+            "init-config",
+            "--out",
+            str(config_path),
+            "--profile",
+            "thesis-verification",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "forecast-lstm-tiny" in config_path.read_text(encoding="utf-8")
 
 
 def test_assistant_cli_commands(tmp_path: Path, opcua_prepared: Path):
@@ -433,9 +456,11 @@ def test_assistant_cli_commands(tmp_path: Path, opcua_prepared: Path):
             str(evidence),
             "--out",
             str(tmp_path / "assistant-cli"),
+            "--no-progress",
         ],
     )
     assert run.exit_code == 0, run.output
+    assert (tmp_path / "assistant-cli" / "progress_snapshot.json").exists()
     summarize = runner.invoke(
         app,
         ["assistant", "summarize", "--run", str(tmp_path / "assistant-cli")],

@@ -65,6 +65,68 @@ model = "fake-assistant"
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
 
 
+THESIS_VERIFICATION_CONFIG_TOML = """[reproduction]
+name = "thesis-verification"
+run_evidence = true
+run_xai = true
+run_profiles = true
+run_assistant = true
+xai_ks = [1, 3, 5]
+
+[benchmark]
+name = "thesis-verification"
+protocols = ["naive", "all_in_one", "zero_shot"]
+
+[benchmark.evaluation]
+threshold_quantile = 0.995
+
+[[datasets]]
+id = "TEP"
+prepared = "prepared/TEP"
+
+[[datasets]]
+id = "SWaT"
+prepared = "prepared/SWaT"
+
+[[datasets]]
+id = "HAI"
+prepared = "prepared/HAI"
+
+[[datasets]]
+id = "HAI-CPPS"
+prepared = "prepared/HAI_CPPS"
+
+[[detectors]]
+id = "forecast-ridge"
+name = "forecast-ridge"
+parameters = { window = 32, stride = 4, lags = 1, alpha = 1.0, standardize = true, seed = 1337 }
+
+[[detectors]]
+id = "forecast-lstm-tiny"
+name = "forecast-lstm"
+parameters = { window = 32, max_train_windows = 256, epochs = 1, device = "auto" }
+
+[assistant]
+suite_id = "thesis-verification-assistant"
+prepared = "prepared/TEP"
+cases_per_dataset = 1
+top_k = 8
+minimum_supported_claims = 1
+prompt_budget_chars = 12000
+query_template = "__THESIS_assistant replay_QUERY__"
+
+[assistant.provider]
+name = "llama-cpp"
+model = "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
+base_url = "http://127.0.0.1:8080/v1"
+timeout_s = 180.0
+temperature = 0.0
+top_p = 1.0
+max_tokens = 700
+seed = 1337
+""".replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
+
+
 THESIS_FULL_CONFIG_TOML = """[reproduction]
 name = "thesis-full"
 run_evidence = true
@@ -97,9 +159,24 @@ id = "HAI-CPPS"
 prepared = "prepared/HAI_CPPS"
 
 [[detectors]]
+id = "forecast-ridge"
+name = "forecast-ridge"
+parameters = { window = 32, stride = 4, lags = 1, alpha = 1.0, standardize = true, seed = 1337 }
+
+[[detectors]]
+id = "forecast-lstm"
+name = "forecast-lstm"
+parameters = { window = 32, epochs = 5, device = "auto" }
+
+[[detectors]]
 id = "dra"
 name = "dra"
 parameters = { window = 32, train_stride = 8, score_stride = 8, epochs = 5, device = "auto" }
+
+[[detectors]]
+id = "interfusion"
+name = "interfusion"
+parameters = { window = 32, epochs = 5, device = "auto" }
 
 [[detectors]]
 id = "drcad"
@@ -181,10 +258,14 @@ def write_default_reproduction_config(path: str | Path, profile: str = "thesis-s
     output.parent.mkdir(parents=True, exist_ok=True)
     if profile == "thesis-smoke":
         payload = THESIS_SMOKE_CONFIG_TOML
+    elif profile == "thesis-verification":
+        payload = THESIS_VERIFICATION_CONFIG_TOML
     elif profile == "thesis-full":
         payload = THESIS_FULL_CONFIG_TOML
     else:
-        raise ValueError("profile must be either 'thesis-smoke' or 'thesis-full'.")
+        raise ValueError(
+            "profile must be one of 'thesis-smoke', 'thesis-verification', or 'thesis-full'."
+        )
     output.write_text(payload, encoding="utf-8")
     return output
 

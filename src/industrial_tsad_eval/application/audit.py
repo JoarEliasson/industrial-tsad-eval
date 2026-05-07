@@ -48,6 +48,12 @@ from industrial_tsad_eval.domain.benchmark import (
 from industrial_tsad_eval.domain.datasets import DatasetAdapterConfig
 from industrial_tsad_eval.domain.errors import ReproductionError
 from industrial_tsad_eval.domain.llm import LLMProviderConfig
+from industrial_tsad_eval.domain.progress import (
+    CompositeProgressSink,
+    ProgressEvent,
+    ProgressSink,
+    ProgressStatus,
+)
 from industrial_tsad_eval.domain.reproduction import ReproductionConfig
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.examples import (
@@ -55,6 +61,7 @@ from industrial_tsad_eval.infrastructure.examples import (
     make_thesis_raw_fixtures,
 )
 from industrial_tsad_eval.infrastructure.json_utils import read_json
+from industrial_tsad_eval.infrastructure.progress import LocalProgressSink
 from industrial_tsad_eval.infrastructure.reproduction_config import (
     load_reproduction_config,
     render_reproduction_config_toml,
@@ -89,6 +96,7 @@ class RunReproducibilityAudit:
         dataset_source_registry: DatasetSourceRegistry,
         provider_registry: LLMProviderRegistry,
         config: ReproducibilityAuditConfig,
+        progress_sink: ProgressSink | None = None,
     ):
         self.detector_registry = detector_registry
         self.dataset_adapter_registry = dataset_adapter_registry
@@ -99,50 +107,101 @@ class RunReproducibilityAudit:
         self.audit_root = Path(config.out) / self.audit_id
         self.workspace = self.audit_root / "workspace"
         self.logs_root = self.audit_root / "logs"
+        self.progress_sink = progress_sink
 
     def run(self) -> AuditRunResult:
         """Execute the audit and write summary artifacts."""
         if self.audit_root.exists():
             raise ReproductionError(f"Audit output already exists: {self.audit_root}")
         self.audit_root.mkdir(parents=True, exist_ok=False)
-        checks = [
-            self._subprocess_check(
+        progress = CompositeProgressSink(
+            [LocalProgressSink(self.audit_root, self.audit_id), self.progress_sink]
+        )
+        checks: list[AuditCheck] = []
+        base_checks: list[tuple[str, bool, Callable[[], AuditCheck]]] = [
+            (
                 "package-import",
-                [
-                    self.config.python_executable,
-                    "-c",
-                    "import industrial_tsad_eval; print(industrial_tsad_eval.__version__)",
-                ],
-                required=True,
+                True,
+                lambda: self._subprocess_check(
+                    "package-import",
+                    [
+                        self.config.python_executable,
+                        "-c",
+                        "import industrial_tsad_eval; print(industrial_tsad_eval.__version__)",
+                    ],
+                    required=True,
+                ),
             ),
-            self._subprocess_check(
+            (
                 "cli-help",
-                [
-                    self.config.python_executable,
-                    "-c",
-                    (
-                        "from typer.testing import CliRunner; "
-                        "from industrial_tsad_eval.interfaces.cli.main import app; "
-                        "r=CliRunner().invoke(app, ['--help']); print(r.output); "
-                        "raise SystemExit(r.exit_code)"
-                    ),
-                ],
-                required=True,
+                True,
+                lambda: self._subprocess_check(
+                    "cli-help",
+                    [
+                        self.config.python_executable,
+                        "-c",
+                        (
+                            "from typer.testing import CliRunner; "
+                            "from industrial_tsad_eval.interfaces.cli.main import app; "
+                            "r=CliRunner().invoke(app, ['--help']); print(r.output); "
+                            "raise SystemExit(r.exit_code)"
+                        ),
+                    ],
+                    required=True,
+                ),
             ),
-            self._registry_check(),
-            self._subprocess_check(
+            ("registry", True, self._registry_check),
+            (
                 "architecture-tests",
-                [self.config.python_executable, "-m", "pytest", "tests/test_architecture.py"],
-                required=True,
+                True,
+                lambda: self._subprocess_check(
+                    "architecture-tests",
+                    [self.config.python_executable, "-m", "pytest", "tests/test_architecture.py"],
+                    required=True,
+                ),
             ),
         ]
-        checks.extend(self._smoke_reproduction_checks())
-        checks.append(self._synthetic_thesis_setup_check())
+        total = len(base_checks) + 2 + (4 if self.config.include_optional else 0)
+        ordinal = 1
+        for name, required, callback in base_checks:
+            checks.append(
+                self._run_progress_check(progress, name, required, ordinal, total, callback)
+            )
+            ordinal += 1
+        checks.extend(
+            self._run_progress_group(
+                progress,
+                "smoke-reproduction",
+                True,
+                ordinal,
+                total,
+                self._smoke_reproduction_checks,
+            )
+        )
+        ordinal += 1
+        checks.append(
+            self._run_progress_check(
+                progress,
+                "synthetic-thesis-setup",
+                True,
+                ordinal,
+                total,
+                self._synthetic_thesis_setup_check,
+            )
+        )
+        ordinal += 1
         if self.config.include_optional:
-            checks.append(self._torch_smoke_check())
-            checks.append(self._profile_extras_check())
-            checks.append(self._llama_cpp_smoke_check())
-            checks.append(self._thesis_full_local_preflight_check())
+            optional_checks: list[tuple[str, Callable[[], AuditCheck]]] = [
+                ("torch-smoke", self._torch_smoke_check),
+                ("profile-extras", self._profile_extras_check),
+                ("llama-cpp-smoke", self._llama_cpp_smoke_check),
+                ("thesis-full-local-preflight", self._thesis_full_local_preflight_check),
+            ]
+            for name, callback in optional_checks:
+                checks.append(
+                    self._run_progress_check(progress, name, False, ordinal, total, callback)
+                )
+                ordinal += 1
 
         ok = not any(check.required and check.status == "fail" for check in checks)
         setup_recommendations = _setup_recommendations(checks)
@@ -157,6 +216,132 @@ class RunReproducibilityAudit:
         writer.write_json("audit_summary.json", result.to_dict())
         writer.write_text("audit_summary.md", _render_audit_markdown(result))
         return result
+
+    def _run_progress_check(
+        self,
+        progress: ProgressSink,
+        name: str,
+        required: bool,
+        ordinal: int,
+        total: int,
+        callback: Callable[[], AuditCheck],
+    ) -> AuditCheck:
+        progress.emit(
+            ProgressEvent(
+                run_id=self.audit_id,
+                stage="audit",
+                item_id=name,
+                status="running",
+                ordinal=ordinal,
+                total=total,
+                path=str(self.audit_root),
+            )
+        )
+        try:
+            check = callback()
+        except Exception as exc:
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.audit_id,
+                    stage="audit",
+                    item_id=name,
+                    status="failed",
+                    ordinal=ordinal,
+                    total=total,
+                    path=str(self.audit_root),
+                    error=f"{type(exc).__name__}: {exc}",
+                    metrics={"required": required},
+                )
+            )
+            raise
+        progress.emit(
+            ProgressEvent(
+                run_id=self.audit_id,
+                stage="audit",
+                item_id=check.name,
+                status=_audit_progress_status(check.status),
+                ordinal=ordinal,
+                total=total,
+                path=str(self.audit_root),
+                duration_s=check.duration_s,
+                error=check.message if check.status == "fail" else None,
+                message=check.message,
+                metrics={"required": required},
+            )
+        )
+        return check
+
+    def _run_progress_group(
+        self,
+        progress: ProgressSink,
+        name: str,
+        required: bool,
+        ordinal: int,
+        total: int,
+        callback: Callable[[], list[AuditCheck]],
+    ) -> list[AuditCheck]:
+        progress.emit(
+            ProgressEvent(
+                run_id=self.audit_id,
+                stage="audit",
+                item_id=name,
+                status="running",
+                ordinal=ordinal,
+                total=total,
+                path=str(self.audit_root),
+            )
+        )
+        try:
+            checks = callback()
+        except Exception as exc:
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.audit_id,
+                    stage="audit",
+                    item_id=name,
+                    status="failed",
+                    ordinal=ordinal,
+                    total=total,
+                    path=str(self.audit_root),
+                    error=f"{type(exc).__name__}: {exc}",
+                    metrics={"required": required},
+                )
+            )
+            raise
+        failed = [check for check in checks if check.status == "fail"]
+        status: ProgressStatus = "failed" if failed else "completed"
+        progress.emit(
+            ProgressEvent(
+                run_id=self.audit_id,
+                stage="audit",
+                item_id=name,
+                status=status,
+                ordinal=ordinal,
+                total=total,
+                path=str(self.audit_root),
+                metrics={
+                    "required": required,
+                    "check_count": len(checks),
+                    "failed": len(failed),
+                },
+                error="One or more smoke checks failed." if failed else None,
+            )
+        )
+        for check in checks:
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.audit_id,
+                    stage="audit",
+                    item_id=check.name,
+                    status=_audit_progress_status(check.status),
+                    path=str(self.audit_root),
+                    duration_s=check.duration_s,
+                    error=check.message if check.status == "fail" else None,
+                    message=check.message,
+                    metrics={"required": check.required},
+                )
+            )
+        return checks
 
     def _subprocess_check(
         self,
@@ -712,6 +897,14 @@ def _setup_recommendations(checks: list[AuditCheck]) -> list[AuditSetupRecommend
             )
         )
     return recommendations
+
+
+def _audit_progress_status(status: AuditStatus) -> ProgressStatus:
+    if status == "pass":
+        return "completed"
+    if status == "fail":
+        return "failed"
+    return status
 
 
 def _render_audit_markdown(result: AuditRunResult) -> str:

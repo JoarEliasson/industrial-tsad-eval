@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from industrial_tsad_eval.domain.assistant_replay import (
 from industrial_tsad_eval.domain.errors import AssistantReplayError
 from industrial_tsad_eval.domain.llm import LLMMessage, LLMStructuredRequest
 from industrial_tsad_eval.domain.operator import OperatorRetrievalResult
+from industrial_tsad_eval.domain.progress import CompositeProgressSink, ProgressEvent, ProgressSink
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.assistant_replay_repository import (
     LocalAssistantReplayMetricsRepository,
@@ -36,6 +38,7 @@ from industrial_tsad_eval.infrastructure.assistant_replay_repository import (
 from industrial_tsad_eval.infrastructure.evidence_repository import LocalEvidenceRepository
 from industrial_tsad_eval.infrastructure.json_utils import read_json
 from industrial_tsad_eval.infrastructure.operator_repository import LocalOperatorCardRepository
+from industrial_tsad_eval.infrastructure.progress import LocalProgressSink
 from industrial_tsad_eval.plugins.providers import LLMProviderRegistry
 
 CLAIM_RE = re.compile(r"(?:^|\n)\s*(?:[-*]|\d+[.)])?\s*([^\n]+)")
@@ -538,12 +541,14 @@ class RunAssistantReplaySuite:
         out: str | Path,
         provider_registry: LLMProviderRegistry,
         benchmark: str | Path | None = None,
+        progress_sink: ProgressSink | None = None,
     ):
         self.config = config
         self.evidence = Path(evidence)
         self.out = Path(out)
         self.provider_registry = provider_registry
         self.benchmark = Path(benchmark) if benchmark is not None else None
+        self.progress_sink = progress_sink
 
     def run(self) -> AssistantReplayRunResult:
         """Build and execute a replay suite, then write aggregate metrics."""
@@ -565,31 +570,93 @@ class RunAssistantReplaySuite:
             },
         )
         manifest = BuildReplaySuite(config=self.config, evidence=self.evidence, out=self.out).run()
+        progress = CompositeProgressSink(
+            [LocalProgressSink(self.out, self.config.suite_id), self.progress_sink]
+        )
         per_run: list[AssistantRunMetrics] = []
-        for case in manifest.cases:
+        for ordinal, case in enumerate(manifest.cases, start=1):
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.config.suite_id,
+                    stage="assistant_case",
+                    item_id=case.case_id,
+                    status="planned",
+                    ordinal=ordinal,
+                    total=len(manifest.cases),
+                    path=str(self.out / "runs" / case.case_id),
+                )
+            )
+        for ordinal, case in enumerate(manifest.cases, start=1):
+            started = time.perf_counter()
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.config.suite_id,
+                    stage="assistant_case",
+                    item_id=case.case_id,
+                    status="running",
+                    ordinal=ordinal,
+                    total=len(manifest.cases),
+                    path=str(self.out / "runs" / case.case_id),
+                )
+            )
             try:
-                per_run.append(
-                    RunAssistantCase(
-                        config=self.config,
-                        evidence=self.evidence,
-                        out=self.out,
-                        case=case,
-                        provider_registry=self.provider_registry,
-                    ).run()
+                case_metrics = RunAssistantCase(
+                    config=self.config,
+                    evidence=self.evidence,
+                    out=self.out,
+                    case=case,
+                    provider_registry=self.provider_registry,
+                ).run()
+                per_run.append(case_metrics)
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.config.suite_id,
+                        stage="assistant_case",
+                        item_id=case.case_id,
+                        status="completed" if case_metrics.verified_response_safe else "failed",
+                        ordinal=ordinal,
+                        total=len(manifest.cases),
+                        path=str(self.out / "runs" / case.case_id),
+                        duration_s=round(time.perf_counter() - started, 6),
+                        metrics={
+                            "supported_claims": case_metrics.supported_claims,
+                            "total_claims": case_metrics.total_claims,
+                            "safe": case_metrics.verified_response_safe,
+                        },
+                    )
                 )
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 _write_failed_case_artifacts(self.out, case, error)
-                per_run.append(_failed_case_metric(case, error))
-        metrics = aggregate_assistant_metrics(self.config.suite_id, per_run)
-        LocalAssistantReplayMetricsRepository(self.out).write_summary(metrics)
+                case_metrics = _failed_case_metric(case, error)
+                per_run.append(case_metrics)
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.config.suite_id,
+                        stage="assistant_case",
+                        item_id=case.case_id,
+                        status="failed",
+                        ordinal=ordinal,
+                        total=len(manifest.cases),
+                        path=str(self.out / "runs" / case.case_id),
+                        duration_s=round(time.perf_counter() - started, 6),
+                        metrics={
+                            "supported_claims": case_metrics.supported_claims,
+                            "total_claims": case_metrics.total_claims,
+                            "safe": case_metrics.verified_response_safe,
+                        },
+                        error=error,
+                    )
+                )
+        aggregate_metrics = aggregate_assistant_metrics(self.config.suite_id, per_run)
+        LocalAssistantReplayMetricsRepository(self.out).write_summary(aggregate_metrics)
         if self.config.include_operator_cards:
             _write_operator_cards(self.config, self.evidence, self.out)
         return AssistantReplayRunResult(
             suite_id=self.config.suite_id,
             run_dir=str(self.out),
             ok=all(item.verified_response_safe for item in per_run),
-            metrics=metrics,
+            metrics=aggregate_metrics,
         )
 
 

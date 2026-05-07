@@ -188,9 +188,16 @@ def test_cli_benchmark_commands(tmp_path: Path):
             str(tmp_path / "bench-runs"),
             "--run-id",
             "cli-run",
+            "--no-progress",
         ],
     )
     assert run.exit_code == 0, run.output
+    assert (
+        runner.invoke(
+            app, ["bench", "status", "--run", str(tmp_path / "bench-runs" / "cli-run")]
+        ).exit_code
+        == 0
+    )
     assert (
         runner.invoke(
             app, ["bench", "summarize", "--run", str(tmp_path / "bench-runs" / "cli-run")]

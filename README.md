@@ -101,13 +101,14 @@ itse operator card generate --prepared examples/generated/OPCUA_SYNTH --evidence
 itse operator card validate --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence --cards out/operator-cards
 ```
 
-Thesis-style reproducibility keeps benchmark, evidence, XAI, profiling, and assistant replay
-assistant experiments behind clean application services:
+Thesis-style reproducibility keeps benchmark, evidence, XAI, profiling, and
+assistant replay experiments behind clean application services:
 
 ```powershell
 itse reproduce init-config --out config/thesis_smoke.toml --profile thesis-smoke
 itse reproduce plan --config config/thesis_smoke.toml
 itse reproduce run --config config/thesis_smoke.toml --out out/reproduction --run-id smoke
+itse reproduce status --run out/reproduction/smoke
 
 itse assistant providers
 itse assistant preflight --config config/thesis_smoke.toml
@@ -186,7 +187,9 @@ See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisiti
 [docs/system.md](docs/system.md), [docs/profiling.md](docs/profiling.md),
 [docs/evidence.md](docs/evidence.md), [docs/xai.md](docs/xai.md), and
 [docs/operator.md](docs/operator.md), [docs/providers.md](docs/providers.md),
-[docs/assistant.md](docs/assistant.md), [docs/reproduction.md](docs/reproduction.md), and
+[docs/assistant_replay.md](docs/assistant_replay.md),
+[docs/reproduction.md](docs/reproduction.md),
+[docs/thesis_runbook.md](docs/thesis_runbook.md), and
 [docs/thesis_crosswalk.md](docs/thesis_crosswalk.md),
 [docs/reproducibility_audit.md](docs/reproducibility_audit.md), and
 [docs/optional_setup.md](docs/optional_setup.md) for details.

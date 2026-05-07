@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from industrial_tsad_eval.application.benchmark import RunBenchmark
+from industrial_tsad_eval.domain.benchmark import (
+    BenchmarkConfig,
+    BenchmarkDatasetConfig,
+    BenchmarkDetectorConfig,
+)
+from industrial_tsad_eval.domain.progress import ProgressEvent
+from industrial_tsad_eval.infrastructure.examples import make_opcua_fixture
+from industrial_tsad_eval.infrastructure.progress import LocalProgressSink, read_run_progress
+from industrial_tsad_eval.infrastructure.reproduction_config import (
+    load_reproduction_config,
+    write_default_reproduction_config,
+)
+from industrial_tsad_eval.plugins.registry import default_detector_registry
+
+
+def test_progress_event_serializes_core_fields():
+    event = ProgressEvent(
+        run_id="run",
+        stage="benchmark",
+        item_id="exp",
+        status="completed",
+        ordinal=1,
+        total=2,
+        metrics={"event_f1": 1.0},
+    )
+
+    payload = event.to_dict()
+
+    assert payload["format_version"] == "progress-event-v1"
+    assert event.key == "benchmark:exp"
+    assert payload["metrics"] == {"event_f1": 1.0}
+
+
+def test_local_progress_sink_writes_jsonl_and_snapshot(tmp_path: Path):
+    sink = LocalProgressSink(tmp_path, "run")
+
+    sink.emit(ProgressEvent(run_id="run", stage="stage", item_id="a", status="running"))
+    sink.emit(ProgressEvent(run_id="run", stage="stage", item_id="a", status="completed"))
+
+    lines = (tmp_path / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+    snapshot = json.loads((tmp_path / "progress_snapshot.json").read_text(encoding="utf-8"))
+
+    assert len(lines) == 2
+    assert snapshot["counts"] == {"completed": 1}
+    assert read_run_progress(tmp_path)["latest_event"]["status"] == "completed"
+
+
+def test_benchmark_progress_artifacts_are_ordered(tmp_path: Path):
+    prepared = make_opcua_fixture(tmp_path / "examples")
+    config = BenchmarkConfig(
+        name="progress-smoke",
+        protocols=["naive", "all_in_one"],
+        datasets=[BenchmarkDatasetConfig(id="opcua", prepared=str(prepared))],
+        detectors=[
+            BenchmarkDetectorConfig(
+                id="forecast-ridge",
+                name="forecast-ridge",
+                parameters={"window": 24, "stride": 4, "lags": 1},
+            )
+        ],
+    )
+
+    result = RunBenchmark(
+        config=config,
+        detector_registry=default_detector_registry(),
+        out=tmp_path / "runs",
+        run_id="progress-run",
+    ).run()
+    snapshot = read_run_progress(Path(result.run_dir))
+
+    assert result.ok
+    assert (Path(result.run_dir) / "progress.jsonl").exists()
+    assert snapshot["counts"] == {"completed": 2}
+    assert snapshot["items"]["benchmark:opcua__forecast-ridge__naive"]["ordinal"] == 1
+
+
+def test_thesis_verification_profile_contains_expected_detector_mix(tmp_path: Path):
+    config_path = tmp_path / "verification.toml"
+    write_default_reproduction_config(config_path, profile="thesis-verification")
+
+    config = load_reproduction_config(config_path)
+    detector_names = [detector.name for detector in config.benchmark.detectors]
+
+    assert config.name == "thesis-verification"
+    assert detector_names == ["forecast-ridge", "forecast-lstm"]
+    assert config.benchmark.protocols == ["naive", "all_in_one", "zero_shot"]
+
+
+def test_thesis_full_profile_lists_all_detector_plugins(tmp_path: Path):
+    config_path = tmp_path / "full.toml"
+    write_default_reproduction_config(config_path, profile="thesis-full")
+
+    config = load_reproduction_config(config_path)
+    detector_names = [detector.name for detector in config.benchmark.detectors]
+
+    assert detector_names == ["forecast-ridge", "forecast-lstm", "dra", "interfusion", "drcad"]

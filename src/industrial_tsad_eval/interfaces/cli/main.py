@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -66,6 +67,7 @@ from industrial_tsad_eval.infrastructure.examples import (
     make_thesis_raw_fixtures,
 )
 from industrial_tsad_eval.infrastructure.json_utils import write_json
+from industrial_tsad_eval.infrastructure.progress import read_run_progress
 from industrial_tsad_eval.infrastructure.reproduction_config import (
     load_assistant_config,
     load_reproduction_config,
@@ -78,6 +80,7 @@ from industrial_tsad_eval.infrastructure.system import (
     probe_torch_runtime,
     recommend_backend_for_gpus,
 )
+from industrial_tsad_eval.interfaces.cli.progress import cli_progress
 from industrial_tsad_eval.plugins.providers import default_llm_provider_registry
 from industrial_tsad_eval.plugins.registry import (
     default_dataset_adapter_registry,
@@ -442,22 +445,35 @@ def bench_run(
         ..., "--out", file_okay=False, help="Benchmark runs output directory."
     ),
     run_id: str | None = typer.Option(None, "--run-id", help="Optional run id override."),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress UI."),
 ) -> None:
     """Run the benchmark matrix and write structured run artifacts."""
     try:
         loaded = load_benchmark_config(config)
-        result = RunBenchmark(
-            config=loaded,
-            detector_registry=default_detector_registry(),
-            out=out,
-            run_id=run_id,
-            source_config=config,
-        ).run()
+        with cli_progress(not no_progress) as progress:
+            result = RunBenchmark(
+                config=loaded,
+                detector_registry=default_detector_registry(),
+                out=out,
+                run_id=run_id,
+                source_config=config,
+                progress_sink=progress,
+            ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.to_dict())
     if not result.ok:
         raise typer.Exit(1)
+
+
+@bench_app.command("status")
+def bench_status(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="Benchmark run directory."),
+    watch: bool = typer.Option(False, "--watch", help="Refresh until the run completes."),
+    interval_s: float = typer.Option(10.0, "--interval-s", help="Watch refresh interval."),
+) -> None:
+    """Print benchmark run progress status."""
+    _status_loop(run, watch=watch, interval_s=interval_s)
 
 
 @bench_app.command("summarize")
@@ -835,17 +851,20 @@ def assistant_run(
     benchmark: Path = typer.Option(..., "--benchmark", file_okay=False, help="Benchmark run dir."),
     evidence: Path = typer.Option(..., "--evidence", file_okay=False, help="Evidence Bundle dir."),
     out: Path = typer.Option(..., "--out", file_okay=False, help="assistant replay output dir."),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress UI."),
 ) -> None:
     """Run a thesis-style assistant replay suite."""
     try:
         loaded = load_assistant_config(config)
-        result = RunAssistantReplaySuite(
-            config=loaded,
-            evidence=evidence,
-            out=out,
-            provider_registry=default_llm_provider_registry(),
-            benchmark=benchmark,
-        ).run()
+        with cli_progress(not no_progress) as progress:
+            result = RunAssistantReplaySuite(
+                config=loaded,
+                evidence=evidence,
+                out=out,
+                provider_registry=default_llm_provider_registry(),
+                benchmark=benchmark,
+                progress_sink=progress,
+            ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.to_dict())
@@ -869,7 +888,9 @@ def assistant_summarize(
 def reproduce_init_config(
     out: Path = typer.Option(..., "--out", dir_okay=False, help="Reproduction TOML file."),
     profile: str = typer.Option(
-        "thesis-smoke", "--profile", help="Config profile: thesis-smoke or thesis-full."
+        "thesis-smoke",
+        "--profile",
+        help="Config profile: thesis-smoke, thesis-verification, or thesis-full.",
     ),
 ) -> None:
     """Write a starter thesis reproduction config."""
@@ -918,23 +939,36 @@ def reproduce_run(
     config: Path = typer.Option(..., "--config", dir_okay=False, help="Reproduction TOML config."),
     out: Path = typer.Option(..., "--out", file_okay=False, help="Reproduction output root."),
     run_id: str | None = typer.Option(None, "--run-id", help="Optional run id override."),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress UI."),
 ) -> None:
     """Run a thesis-style reproduction workflow."""
     try:
         loaded = load_reproduction_config(config)
-        result = RunThesisReproduction(
-            config=loaded,
-            detector_registry=default_detector_registry(),
-            provider_registry=default_llm_provider_registry(),
-            out=out,
-            run_id=run_id,
-            source_config=config,
-        ).run()
+        with cli_progress(not no_progress) as progress:
+            result = RunThesisReproduction(
+                config=loaded,
+                detector_registry=default_detector_registry(),
+                provider_registry=default_llm_provider_registry(),
+                out=out,
+                run_id=run_id,
+                source_config=config,
+                progress_sink=progress,
+            ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.to_dict())
     if not result.ok:
         raise typer.Exit(1)
+
+
+@reproduce_app.command("status")
+def reproduce_status(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="Reproduction run directory."),
+    watch: bool = typer.Option(False, "--watch", help="Refresh until the run completes."),
+    interval_s: float = typer.Option(10.0, "--interval-s", help="Watch refresh interval."),
+) -> None:
+    """Print thesis-style reproduction progress status."""
+    _status_loop(run, watch=watch, interval_s=interval_s)
 
 
 @reproduce_app.command("summarize")
@@ -960,20 +994,23 @@ def audit_run(
         "--include-optional/--skip-optional",
         help="Include torch, llama.cpp, and thesis-full optional probes.",
     ),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress UI."),
 ) -> None:
     """Run clean-repo reproducibility audit checks."""
     try:
-        result = RunReproducibilityAudit(
-            detector_registry=default_detector_registry(),
-            dataset_adapter_registry=default_dataset_adapter_registry(),
-            dataset_source_registry=default_dataset_source_registry(),
-            provider_registry=default_llm_provider_registry(),
-            config=ReproducibilityAuditConfig(
-                out=out,
-                audit_id=audit_id,
-                include_optional=include_optional,
-            ),
-        ).run()
+        with cli_progress(not no_progress) as progress:
+            result = RunReproducibilityAudit(
+                detector_registry=default_detector_registry(),
+                dataset_adapter_registry=default_dataset_adapter_registry(),
+                dataset_source_registry=default_dataset_source_registry(),
+                provider_registry=default_llm_provider_registry(),
+                config=ReproducibilityAuditConfig(
+                    out=out,
+                    audit_id=audit_id,
+                    include_optional=include_optional,
+                ),
+                progress_sink=progress,
+            ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=result.to_dict())
@@ -1003,6 +1040,63 @@ def _parse_ks(value: str) -> list[int]:
     if any(k <= 0 for k in ks):
         raise ValueError("--ks values must be positive.")
     return ks
+
+
+def _status_loop(run: Path, *, watch: bool, interval_s: float) -> None:
+    while True:
+        payload = read_run_progress(run)
+        if watch:
+            console.clear()
+        _print_status(run, payload)
+        manifest_status = _manifest_status(run)
+        if not watch or manifest_status in {"completed", "failed"}:
+            return
+        time.sleep(interval_s)
+
+
+def _print_status(run: Path, payload: dict[str, Any]) -> None:
+    counts = payload.get("counts", {})
+    table = Table("Status", "Count")
+    if isinstance(counts, dict) and counts:
+        for status, count in sorted(counts.items()):
+            table.add_row(str(status), str(count))
+    else:
+        table.add_row("unknown", "0")
+    console.print(f"[bold]Run:[/bold] {run}")
+    console.print(table)
+    latest = payload.get("latest_event")
+    if isinstance(latest, dict):
+        console.print_json(
+            data={
+                "latest_event": {
+                    "stage": latest.get("stage"),
+                    "item_id": latest.get("item_id"),
+                    "status": latest.get("status"),
+                    "path": latest.get("path"),
+                    "error": latest.get("error"),
+                }
+            }
+        )
+    failure = payload.get("latest_failure")
+    if isinstance(failure, dict):
+        console.print_json(
+            data={
+                "latest_failure": {
+                    "stage": failure.get("stage"),
+                    "item_id": failure.get("item_id"),
+                    "path": failure.get("path"),
+                    "error": failure.get("error"),
+                }
+            }
+        )
+
+
+def _manifest_status(run: Path) -> str:
+    manifest_path = run / "run_manifest.json"
+    if not manifest_path.exists():
+        return "unknown"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return str(payload.get("status", "unknown"))
 
 
 def _fail(message: str) -> NoReturn:

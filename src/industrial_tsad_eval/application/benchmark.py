@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,8 +21,10 @@ from industrial_tsad_eval.domain.benchmark import (
 )
 from industrial_tsad_eval.domain.errors import BenchmarkRunError, IndustrialTSADError
 from industrial_tsad_eval.domain.policy import EvalPolicy
+from industrial_tsad_eval.domain.progress import CompositeProgressSink, ProgressEvent, ProgressSink
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.benchmark_config import render_benchmark_config_toml
+from industrial_tsad_eval.infrastructure.progress import LocalProgressSink
 from industrial_tsad_eval.plugins.registry import DetectorRegistry
 
 SUMMARY_COLUMNS = [
@@ -75,12 +78,14 @@ class RunBenchmark:
         out: str | Path,
         run_id: str | None = None,
         source_config: str | Path | None = None,
+        progress_sink: ProgressSink | None = None,
     ):
         self.config = config
         self.detector_registry = detector_registry
         self.out = Path(out)
         self.run_id = run_id or _default_run_id(config.name)
         self.source_config = Path(source_config) if source_config is not None else None
+        self.progress_sink = progress_sink
 
     def run(self) -> BenchmarkRunResult:
         """Execute the benchmark matrix and write run artifacts."""
@@ -90,6 +95,9 @@ class RunBenchmark:
 
         writer = LocalArtifactWriter(run_root)
         experiments = self.config.experiments()
+        progress = CompositeProgressSink(
+            [LocalProgressSink(run_root, self.run_id), self.progress_sink]
+        )
         started_at = _utc_now()
         results: list[BenchmarkExperimentResult] = []
 
@@ -106,9 +114,48 @@ class RunBenchmark:
         )
 
         validation_errors = _validate_datasets(self.config)
-        for experiment in experiments:
+        for ordinal, experiment in enumerate(experiments, start=1):
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="benchmark",
+                    item_id=experiment.experiment_id,
+                    status="planned",
+                    ordinal=ordinal,
+                    total=len(experiments),
+                    path=str(run_root / "experiments" / experiment.experiment_id),
+                )
+            )
+        for ordinal, experiment in enumerate(experiments, start=1):
+            started = time.perf_counter()
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="benchmark",
+                    item_id=experiment.experiment_id,
+                    status="running",
+                    ordinal=ordinal,
+                    total=len(experiments),
+                    path=str(run_root / "experiments" / experiment.experiment_id),
+                    message=f"{experiment.dataset.id}/{experiment.detector.id}/{experiment.protocol}",
+                )
+            )
             result = self._run_experiment(run_root, experiment, validation_errors)
             results.append(result)
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="benchmark",
+                    item_id=experiment.experiment_id,
+                    status="completed" if result.status == "completed" else "failed",
+                    ordinal=ordinal,
+                    total=len(experiments),
+                    path=str(run_root / "experiments" / experiment.experiment_id),
+                    duration_s=round(time.perf_counter() - started, 6),
+                    metrics=_progress_metrics(result),
+                    error=result.error,
+                )
+            )
 
         ok = all(result.status == "completed" for result in results)
         rows = [summary_row(result) for result in results]
@@ -248,6 +295,18 @@ def summary_row(result: BenchmarkExperimentResult) -> dict[str, Any]:
         "scores_dir": result.scores_dir,
         "eval_dir": result.eval_dir,
         "error": result.error,
+    }
+
+
+def _progress_metrics(result: BenchmarkExperimentResult) -> dict[str, Any]:
+    metrics = result.metrics or {}
+    event = _mapping(metrics.get("event"))
+    return {
+        "status": result.status,
+        "threshold": result.threshold,
+        "event_f1": event.get("f1"),
+        "event_n_gt": event.get("n_gt"),
+        "event_n_pred": event.get("n_pred"),
     }
 
 

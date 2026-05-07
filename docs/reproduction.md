@@ -18,8 +18,15 @@ Create a full thesis-style config:
 itse reproduce init-config --out config/thesis_full.toml --profile thesis-full
 ```
 
-The full profile expects local Prepared Format roots for TEP, SWaT, HAI, and
-HAI_CPPS. Raw data and credentials are never vendored.
+Create the bounded real-data verification profile:
+
+```powershell
+itse reproduce init-config --out config/thesis_verification.toml --profile thesis-verification
+```
+
+The verification and full profiles expect local Prepared Format roots for TEP,
+SWaT, HAI, and HAI_CPPS. Raw data and credentials are never vendored. See
+`docs/thesis_runbook.md` for the recommended manual run order.
 
 ## Stages
 
@@ -39,6 +46,7 @@ Use:
 itse reproduce plan --config config/thesis_smoke.toml
 itse reproduce preflight --config config/thesis_smoke.toml --out out/preflight
 itse reproduce run --config config/thesis_smoke.toml --out out/reproduction --run-id smoke
+itse reproduce status --run out/reproduction/smoke
 itse reproduce summarize --run out/reproduction/smoke
 ```
 
@@ -49,6 +57,8 @@ itse reproduce summarize --run out/reproduction/smoke
   config/
   resolved_config.json
   run_manifest.json
+  progress.jsonl
+  progress_snapshot.json
   preflight.json
   benchmark/
   evidence/

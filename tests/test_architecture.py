@@ -16,6 +16,7 @@ def test_public_repo_has_no_personal_review_meta_wording():
     roots = [
         PROJECT_ROOT / "README.md",
         PROJECT_ROOT / "docs",
+        PROJECT_ROOT / "examples",
         PROJECT_ROOT / "src",
         PROJECT_ROOT / "tests",
     ]
@@ -33,6 +34,7 @@ def test_public_repo_uses_neutral_assistant_replay_language():
     roots = [
         PROJECT_ROOT / "README.md",
         PROJECT_ROOT / "docs",
+        PROJECT_ROOT / "examples",
         PROJECT_ROOT / "src",
         PROJECT_ROOT / "tests",
     ]

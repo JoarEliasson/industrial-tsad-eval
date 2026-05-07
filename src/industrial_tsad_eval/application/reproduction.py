@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ from industrial_tsad_eval.application.validation import ValidatePreparedDataset
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
 from industrial_tsad_eval.domain.benchmark import BenchmarkExperimentResult, sanitize_run_id
 from industrial_tsad_eval.domain.errors import ReproductionError
+from industrial_tsad_eval.domain.progress import CompositeProgressSink, ProgressEvent, ProgressSink
 from industrial_tsad_eval.domain.reproduction import (
     ReproductionConfig,
     ReproductionRunResult,
@@ -34,6 +36,7 @@ from industrial_tsad_eval.domain.reproduction import (
 )
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.json_utils import read_json
+from industrial_tsad_eval.infrastructure.progress import LocalProgressSink
 from industrial_tsad_eval.infrastructure.reproduction_config import render_reproduction_config_toml
 from industrial_tsad_eval.plugins.providers import LLMProviderRegistry
 from industrial_tsad_eval.plugins.registry import DetectorRegistry
@@ -127,6 +130,7 @@ class RunThesisReproduction:
         out: str | Path,
         run_id: str | None = None,
         source_config: str | Path | None = None,
+        progress_sink: ProgressSink | None = None,
     ):
         self.config = config
         self.detector_registry = detector_registry
@@ -134,6 +138,7 @@ class RunThesisReproduction:
         self.out = Path(out)
         self.run_id = run_id or _default_run_id(config.name)
         self.source_config = Path(source_config) if source_config is not None else None
+        self.progress_sink = progress_sink
 
     def run(self) -> ReproductionRunResult:
         """Execute the reproduction workflow and write structured artifacts."""
@@ -141,6 +146,9 @@ class RunThesisReproduction:
         if run_root.exists():
             raise ReproductionError(f"Reproduction run already exists: {run_root}")
         writer = LocalArtifactWriter(run_root)
+        progress = CompositeProgressSink(
+            [LocalProgressSink(run_root, self.run_id), self.progress_sink]
+        )
         writer.write_text("config/reproduction.toml", render_reproduction_config_toml(self.config))
         if self.source_config is not None and self.source_config.exists():
             writer.write_text(
@@ -159,6 +167,18 @@ class RunThesisReproduction:
         )
 
         stages: list[ReproductionStageResult] = []
+        preflight_started = time.perf_counter()
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="reproduction",
+                item_id="preflight",
+                status="running",
+                ordinal=1,
+                total=5,
+                path=str(run_root / "preflight.json"),
+            )
+        )
         preflight = PreflightThesisReproduction(
             config=self.config,
             provider_registry=self.provider_registry,
@@ -171,12 +191,38 @@ class RunThesisReproduction:
                 path=str(run_root / "preflight.json"),
             )
         )
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="reproduction",
+                item_id="preflight",
+                status="completed" if preflight["ok"] else "failed",
+                ordinal=1,
+                total=5,
+                path=str(run_root / "preflight.json"),
+                duration_s=round(time.perf_counter() - preflight_started, 6),
+                metrics={"ok": preflight["ok"]},
+            )
+        )
 
+        benchmark_started = time.perf_counter()
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="reproduction",
+                item_id="benchmark",
+                status="running",
+                ordinal=2,
+                total=5,
+                path=str(run_root / "benchmark"),
+            )
+        )
         benchmark_result = RunBenchmark(
             config=self.config.benchmark,
             detector_registry=self.detector_registry,
             out=run_root,
             run_id="benchmark",
+            progress_sink=progress,
         ).run()
         stages.append(
             ReproductionStageResult(
@@ -185,12 +231,42 @@ class RunThesisReproduction:
                 path=benchmark_result.run_dir,
             )
         )
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="reproduction",
+                item_id="benchmark",
+                status="completed" if benchmark_result.ok else "failed",
+                ordinal=2,
+                total=5,
+                path=benchmark_result.run_dir,
+                duration_s=round(time.perf_counter() - benchmark_started, 6),
+                metrics={
+                    "ok": benchmark_result.ok,
+                    "completed": sum(
+                        result.status == "completed" for result in benchmark_result.results
+                    ),
+                    "failed": sum(result.status == "failed" for result in benchmark_result.results),
+                },
+            )
+        )
 
         successful = [result for result in benchmark_result.results if result.status == "completed"]
-        evidence_dirs = self._run_evidence_xai(run_root, successful, stages)
-        self._run_profiles(run_root, successful, stages)
-        self._run_assistant(run_root, successful, evidence_dirs, stages)
+        evidence_dirs = self._run_evidence_xai(run_root, successful, stages, progress)
+        self._run_profiles(run_root, successful, stages, progress)
+        self._run_assistant(run_root, successful, evidence_dirs, stages, progress)
         self._write_summaries(run_root, benchmark_result.results, stages)
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="reproduction",
+                item_id="summaries",
+                status="completed",
+                ordinal=5,
+                total=5,
+                path=str(run_root / "summaries"),
+            )
+        )
 
         ok = all(stage.status in {"completed", "skipped"} for stage in stages)
         writer.write_json(
@@ -217,14 +293,38 @@ class RunThesisReproduction:
         run_root: Path,
         experiments: list[BenchmarkExperimentResult],
         stages: list[ReproductionStageResult],
+        progress: ProgressSink,
     ) -> dict[str, Path]:
         evidence_dirs: dict[str, Path] = {}
         if not self.config.run_evidence:
             stages.append(ReproductionStageResult("evidence", "skipped"))
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="evidence",
+                    item_id="all",
+                    status="skipped",
+                    ordinal=1,
+                    total=1,
+                    message="Evidence generation disabled.",
+                )
+            )
             return evidence_dirs
-        for experiment in experiments:
+        for ordinal, experiment in enumerate(experiments, start=1):
             evidence_dir = run_root / "evidence" / experiment.experiment_id
             dataset_config = _dataset_config(self.config, experiment.dataset)
+            started = time.perf_counter()
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="evidence",
+                    item_id=experiment.experiment_id,
+                    status="running",
+                    ordinal=ordinal,
+                    total=len(experiments),
+                    path=str(evidence_dir),
+                )
+            )
             try:
                 GenerateEvidence(
                     prepared=dataset_config.prepared,
@@ -242,9 +342,33 @@ class RunThesisReproduction:
                         path=str(evidence_dir),
                     )
                 )
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.run_id,
+                        stage="evidence",
+                        item_id=experiment.experiment_id,
+                        status="completed",
+                        ordinal=ordinal,
+                        total=len(experiments),
+                        path=str(evidence_dir),
+                        duration_s=round(time.perf_counter() - started, 6),
+                    )
+                )
                 if self.config.run_xai:
                     gt_map = run_root / "xai" / experiment.experiment_id / "gt_map.json"
                     xai_dir = run_root / "xai" / experiment.experiment_id
+                    xai_started = time.perf_counter()
+                    progress.emit(
+                        ProgressEvent(
+                            run_id=self.run_id,
+                            stage="xai",
+                            item_id=experiment.experiment_id,
+                            status="running",
+                            ordinal=ordinal,
+                            total=len(experiments),
+                            path=str(xai_dir),
+                        )
+                    )
                     BuildGroundTruthTagMap(prepared=dataset_config.prepared, out=gt_map).run()
                     xai_result = EvaluateEvidence(
                         EvaluateEvidenceConfig(
@@ -264,13 +388,40 @@ class RunThesisReproduction:
                             metrics=xai_result.metrics,
                         )
                     )
+                    progress.emit(
+                        ProgressEvent(
+                            run_id=self.run_id,
+                            stage="xai",
+                            item_id=experiment.experiment_id,
+                            status="completed",
+                            ordinal=ordinal,
+                            total=len(experiments),
+                            path=str(xai_dir),
+                            duration_s=round(time.perf_counter() - xai_started, 6),
+                            metrics=xai_result.metrics,
+                        )
+                    )
             except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
                 stages.append(
                     ReproductionStageResult(
                         f"evidence_xai:{experiment.experiment_id}",
                         "failed",
                         path=str(evidence_dir),
-                        error=f"{type(exc).__name__}: {exc}",
+                        error=error,
+                    )
+                )
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.run_id,
+                        stage="evidence",
+                        item_id=experiment.experiment_id,
+                        status="failed",
+                        ordinal=ordinal,
+                        total=len(experiments),
+                        path=str(evidence_dir),
+                        duration_s=round(time.perf_counter() - started, 6),
+                        error=error,
                     )
                 )
         if self.config.run_xai and not experiments:
@@ -288,16 +439,51 @@ class RunThesisReproduction:
         run_root: Path,
         experiments: list[BenchmarkExperimentResult],
         stages: list[ReproductionStageResult],
+        progress: ProgressSink,
     ) -> None:
         if not self.config.run_profiles:
             stages.append(ReproductionStageResult("profiles", "skipped"))
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="profiles",
+                    item_id="all",
+                    status="skipped",
+                    ordinal=3,
+                    total=5,
+                    message="Profiling disabled.",
+                )
+            )
             return
         if not experiments:
             stages.append(ReproductionStageResult("profiles", "skipped", error="No experiments."))
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="profiles",
+                    item_id="all",
+                    status="skipped",
+                    ordinal=3,
+                    total=5,
+                    error="No experiments.",
+                )
+            )
             return
         experiment = experiments[0]
         dataset_config = _dataset_config(self.config, experiment.dataset)
         detector_config = _detector_config(self.config, experiment.detector)
+        started = time.perf_counter()
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="profiles",
+                item_id=experiment.experiment_id,
+                status="running",
+                ordinal=3,
+                total=5,
+                path=str(run_root / "profiles"),
+            )
+        )
         try:
             result = ProfileScoreEvaluate(
                 detector_registry=self.detector_registry,
@@ -311,13 +497,39 @@ class RunThesisReproduction:
                 ),
             ).run()
             stages.append(ReproductionStageResult("profiles", "completed", path=result.profile_dir))
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="profiles",
+                    item_id=experiment.experiment_id,
+                    status="completed",
+                    ordinal=3,
+                    total=5,
+                    path=result.profile_dir,
+                    duration_s=round(time.perf_counter() - started, 6),
+                )
+            )
         except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
             stages.append(
                 ReproductionStageResult(
                     "profiles",
                     "failed",
                     path=str(run_root / "profiles"),
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=error,
+                )
+            )
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="profiles",
+                    item_id=experiment.experiment_id,
+                    status="failed",
+                    ordinal=3,
+                    total=5,
+                    path=str(run_root / "profiles"),
+                    duration_s=round(time.perf_counter() - started, 6),
+                    error=error,
                 )
             )
 
@@ -327,18 +539,42 @@ class RunThesisReproduction:
         experiments: list[BenchmarkExperimentResult],
         evidence_dirs: dict[str, Path],
         stages: list[ReproductionStageResult],
+        progress: ProgressSink,
     ) -> None:
         if not self.config.run_assistant:
             stages.append(ReproductionStageResult("assistant", "skipped"))
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="assistant",
+                    item_id="all",
+                    status="skipped",
+                    ordinal=4,
+                    total=5,
+                    message="Assistant replay disabled.",
+                )
+            )
             return
         assistant_rows: list[dict[str, Any]] = []
-        for experiment in experiments:
+        for ordinal, experiment in enumerate(experiments, start=1):
             evidence_dir = evidence_dirs.get(experiment.experiment_id)
             if evidence_dir is None:
                 continue
             dataset_config = _dataset_config(self.config, experiment.dataset)
             assistant_config = self.config.assistant.with_prepared(dataset_config.prepared)
             assistant_out = run_root / "assistant" / "experiments" / experiment.experiment_id
+            started = time.perf_counter()
+            progress.emit(
+                ProgressEvent(
+                    run_id=self.run_id,
+                    stage="assistant",
+                    item_id=experiment.experiment_id,
+                    status="running",
+                    ordinal=ordinal,
+                    total=len(experiments),
+                    path=str(assistant_out),
+                )
+            )
             try:
                 result = RunAssistantReplaySuite(
                     config=assistant_config,
@@ -346,6 +582,7 @@ class RunThesisReproduction:
                     out=assistant_out,
                     provider_registry=self.provider_registry,
                     benchmark=run_root / "benchmark",
+                    progress_sink=progress,
                 ).run()
                 summary = result.metrics.to_dict()
                 assistant_rows.append(
@@ -365,13 +602,40 @@ class RunThesisReproduction:
                         metrics=summary,
                     )
                 )
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.run_id,
+                        stage="assistant",
+                        item_id=experiment.experiment_id,
+                        status="completed" if result.ok else "failed",
+                        ordinal=ordinal,
+                        total=len(experiments),
+                        path=result.run_dir,
+                        duration_s=round(time.perf_counter() - started, 6),
+                        metrics=_summary_row(summary),
+                    )
+                )
             except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
                 stages.append(
                     ReproductionStageResult(
                         f"assistant:{experiment.experiment_id}",
                         "failed",
                         path=str(assistant_out),
-                        error=f"{type(exc).__name__}: {exc}",
+                        error=error,
+                    )
+                )
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.run_id,
+                        stage="assistant",
+                        item_id=experiment.experiment_id,
+                        status="failed",
+                        ordinal=ordinal,
+                        total=len(experiments),
+                        path=str(assistant_out),
+                        duration_s=round(time.perf_counter() - started, 6),
+                        error=error,
                     )
                 )
         writer = LocalArtifactWriter(run_root)
