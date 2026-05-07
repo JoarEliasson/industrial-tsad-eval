@@ -17,6 +17,9 @@ venv/
 dist/
 build/
 out/
+data/
+config/*.local.toml
+config/*.docker.toml
 examples/generated/
 prepared/
 scores/

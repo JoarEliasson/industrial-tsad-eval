@@ -92,6 +92,25 @@ def test_thesis_verification_profile_contains_expected_detector_mix(tmp_path: Pa
     assert config.benchmark.protocols == ["naive", "all_in_one", "zero_shot"]
 
 
+def test_default_config_written_under_config_points_to_project_paths(tmp_path: Path):
+    config_path = tmp_path / "config" / "thesis_smoke.docker.toml"
+    write_default_reproduction_config(config_path, profile="thesis-smoke")
+
+    text = config_path.read_text(encoding="utf-8")
+    config = load_reproduction_config(config_path)
+
+    assert 'prepared = "../examples/generated/OPCUA_SYNTH"' in text
+    assert "../../examples/generated/OPCUA_SYNTH" not in text
+    assert (
+        Path(config.benchmark.datasets[0].prepared)
+        == (tmp_path / "examples" / "generated" / "OPCUA_SYNTH").resolve()
+    )
+    assert (
+        Path(config.assistant.prepared)
+        == (tmp_path / "examples" / "generated" / "OPCUA_SYNTH").resolve()
+    )
+
+
 def test_thesis_full_profile_lists_all_detector_plugins(tmp_path: Path):
     config_path = tmp_path / "full.toml"
     write_default_reproduction_config(config_path, profile="thesis-full")

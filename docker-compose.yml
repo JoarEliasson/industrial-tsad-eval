@@ -1,0 +1,29 @@
+services:
+  itse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_EXTRAS: dev,datasets,acquisition,profile,torch
+    image: industrial-tsad-eval:local
+    working_dir: /workspace
+    mem_limit: 16g
+    memswap_limit: 16g
+    shm_size: 1g
+    environment:
+      PYTHONUNBUFFERED: "1"
+      OMP_NUM_THREADS: "8"
+      MKL_NUM_THREADS: "8"
+      OPENBLAS_NUM_THREADS: "8"
+      NUMEXPR_NUM_THREADS: "8"
+      INDUSTRIAL_TSAD_CONTAINER_MEMORY_GB: "16"
+      INDUSTRIAL_TSAD_CONTAINER_SWAP_GB: "16"
+      INDUSTRIAL_TSAD_LLAMA_BASE_URL: "http://host.docker.internal:8080/v1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config:/workspace/config
+      - ./data:/workspace/data
+      - ./prepared:/workspace/prepared
+      - ./out:/workspace/out
+      - ./examples/generated:/workspace/examples/generated

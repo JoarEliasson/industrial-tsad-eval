@@ -189,6 +189,7 @@ See [docs/contracts.md](docs/contracts.md), [docs/acquisition.md](docs/acquisiti
 [docs/operator.md](docs/operator.md), [docs/providers.md](docs/providers.md),
 [docs/assistant_replay.md](docs/assistant_replay.md),
 [docs/reproduction.md](docs/reproduction.md),
+[docs/docker.md](docs/docker.md),
 [docs/thesis_runbook.md](docs/thesis_runbook.md), and
 [docs/thesis_crosswalk.md](docs/thesis_crosswalk.md),
 [docs/reproducibility_audit.md](docs/reproducibility_audit.md), and

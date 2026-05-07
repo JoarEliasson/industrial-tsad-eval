@@ -54,6 +54,10 @@ Success means the `llama-cpp` provider healthcheck reaches
 `http://127.0.0.1:8080/v1/models`, reports `ready`, and assistant replay structured planner
 and referee JSON generation works through `/v1/chat/completions`.
 
+For Docker runs, keep llama.cpp on the host and set provider configs to
+`http://host.docker.internal:8080/v1`. See `docs/docker.md` for the 16 GB
+container memory route and volume layout.
+
 ## OpenAI-Compatible And Cloud Providers
 
 Use `openai-compatible` for local/cloud endpoints that implement

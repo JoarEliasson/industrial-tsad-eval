@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +44,7 @@ threshold_quantile = 0.995
 
 [[datasets]]
 id = "opcua"
-prepared = "examples/generated/OPCUA_SYNTH"
+prepared = "../examples/generated/OPCUA_SYNTH"
 
 [[detectors]]
 id = "forecast-ridge-smoke"
@@ -52,7 +53,7 @@ parameters = { window = 24, stride = 4, lags = 1, alpha = 1.0, standardize = tru
 
 [assistant]
 suite_id = "thesis-smoke-assistant"
-prepared = "examples/generated/OPCUA_SYNTH"
+prepared = "../examples/generated/OPCUA_SYNTH"
 cases_per_dataset = 2
 top_k = 6
 minimum_supported_claims = 1
@@ -82,19 +83,19 @@ threshold_quantile = 0.995
 
 [[datasets]]
 id = "TEP"
-prepared = "prepared/TEP"
+prepared = "../prepared/TEP"
 
 [[datasets]]
 id = "SWaT"
-prepared = "prepared/SWaT"
+prepared = "../prepared/SWaT"
 
 [[datasets]]
 id = "HAI"
-prepared = "prepared/HAI"
+prepared = "../prepared/HAI"
 
 [[datasets]]
 id = "HAI-CPPS"
-prepared = "prepared/HAI_CPPS"
+prepared = "../prepared/HAI_CPPS"
 
 [[detectors]]
 id = "forecast-ridge"
@@ -108,7 +109,7 @@ parameters = { window = 32, max_train_windows = 256, epochs = 1, device = "auto"
 
 [assistant]
 suite_id = "thesis-verification-assistant"
-prepared = "prepared/TEP"
+prepared = "../prepared/TEP"
 cases_per_dataset = 1
 top_k = 8
 minimum_supported_claims = 1
@@ -144,19 +145,19 @@ threshold_quantile = 0.995
 
 [[datasets]]
 id = "TEP"
-prepared = "prepared/TEP"
+prepared = "../prepared/TEP"
 
 [[datasets]]
 id = "SWaT"
-prepared = "prepared/SWaT"
+prepared = "../prepared/SWaT"
 
 [[datasets]]
 id = "HAI"
-prepared = "prepared/HAI"
+prepared = "../prepared/HAI"
 
 [[datasets]]
 id = "HAI-CPPS"
-prepared = "prepared/HAI_CPPS"
+prepared = "../prepared/HAI_CPPS"
 
 [[detectors]]
 id = "forecast-ridge"
@@ -185,7 +186,7 @@ parameters = { window = 32, patch_size = 8, epochs = 5, device = "auto" }
 
 [assistant]
 suite_id = "thesis-assistant-all-datasets"
-prepared = "prepared/TEP"
+prepared = "../prepared/TEP"
 cases_per_dataset = 4
 top_k = 8
 minimum_supported_claims = 1
@@ -266,7 +267,7 @@ def write_default_reproduction_config(path: str | Path, profile: str = "thesis-s
         raise ValueError(
             "profile must be one of 'thesis-smoke', 'thesis-verification', or 'thesis-full'."
         )
-    output.write_text(payload, encoding="utf-8")
+    output.write_text(_default_paths_for_output(payload, output.parent), encoding="utf-8")
     return output
 
 
@@ -364,6 +365,28 @@ def _resolve_path(value: str, base_dir: Path) -> Path:
     if path.is_absolute():
         return path
     return (base_dir / path).resolve()
+
+
+def _default_paths_for_output(payload: str, output_dir: Path) -> str:
+    replacements = {
+        "../examples/generated/OPCUA_SYNTH": _default_relative_path(
+            output_dir,
+            Path("examples") / "generated" / "OPCUA_SYNTH",
+        ),
+        "../prepared/TEP": _default_relative_path(output_dir, Path("prepared") / "TEP"),
+        "../prepared/SWaT": _default_relative_path(output_dir, Path("prepared") / "SWaT"),
+        "../prepared/HAI": _default_relative_path(output_dir, Path("prepared") / "HAI"),
+        "../prepared/HAI_CPPS": _default_relative_path(output_dir, Path("prepared") / "HAI_CPPS"),
+    }
+    for old, new in replacements.items():
+        payload = payload.replace(f'prepared = "{old}"', f'prepared = "{new}"')
+    return payload
+
+
+def _default_relative_path(output_dir: Path, project_relative: Path) -> str:
+    base = output_dir.parent if output_dir.name == "config" else output_dir
+    target = base / project_relative
+    return os.path.relpath(target, output_dir).replace("\\", "/")
 
 
 def _benchmark_lines(config: BenchmarkConfig) -> list[str]:
