@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from industrial_tsad_eval.domain.errors import BenchmarkConfigError
+from industrial_tsad_eval.domain.policy import EvalPolicy
 
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -16,10 +17,30 @@ class BenchmarkEvaluationConfig:
     """Evaluation defaults applied to benchmark experiments."""
 
     threshold_quantile: float = 0.995
+    policy: EvalPolicy = field(default_factory=EvalPolicy)
+    dataset_policies: dict[str, EvalPolicy] = field(default_factory=dict)
+
+    def policy_for(self, dataset: str, protocol: str) -> EvalPolicy:
+        """Return the effective evaluation policy for a dataset/protocol pair."""
+        base = self.policy.to_dict()
+        override = self.dataset_policies.get(dataset)
+        if override is not None:
+            base.update(override.to_dict())
+        base["dataset"] = dataset
+        base["protocol"] = protocol
+        base["threshold_quantile"] = self.threshold_quantile
+        return EvalPolicy.from_dict(base)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
-        return {"threshold_quantile": self.threshold_quantile}
+        return {
+            "threshold_quantile": self.threshold_quantile,
+            "policy": self.policy.to_dict(),
+            "dataset_policies": {
+                dataset: policy.to_dict()
+                for dataset, policy in sorted(self.dataset_policies.items())
+            },
+        }
 
 
 @dataclass(frozen=True)
@@ -43,6 +64,22 @@ class BenchmarkDetectorConfig:
     parameters: dict[str, Any] = field(default_factory=dict)
     datasets: list[str] | None = None
     protocols: list[str] | None = None
+    parameter_overrides: list[BenchmarkParameterOverride] = field(default_factory=list)
+
+    def for_experiment(self, dataset: str, protocol: str) -> BenchmarkDetectorConfig:
+        """Return a detector config with matching parameter overrides applied."""
+        parameters = dict(self.parameters)
+        for override in self.parameter_overrides:
+            if override.matches(dataset, protocol):
+                parameters.update(override.parameters)
+        return BenchmarkDetectorConfig(
+            id=self.id,
+            name=self.name,
+            parameters=parameters,
+            datasets=list(self.datasets) if self.datasets is not None else None,
+            protocols=list(self.protocols) if self.protocols is not None else None,
+            parameter_overrides=list(self.parameter_overrides),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
@@ -55,6 +92,34 @@ class BenchmarkDetectorConfig:
             payload["datasets"] = list(self.datasets)
         if self.protocols is not None:
             payload["protocols"] = list(self.protocols)
+        if self.parameter_overrides:
+            payload["parameter_overrides"] = [
+                override.to_dict() for override in self.parameter_overrides
+            ]
+        return payload
+
+
+@dataclass(frozen=True)
+class BenchmarkParameterOverride:
+    """Detector parameter override for a selected dataset/protocol subset."""
+
+    parameters: dict[str, Any]
+    dataset: str | None = None
+    protocol: str | None = None
+
+    def matches(self, dataset: str, protocol: str) -> bool:
+        """Return true when this override applies to a benchmark experiment."""
+        dataset_matches = self.dataset is None or self.dataset == dataset
+        protocol_matches = self.protocol is None or self.protocol == protocol
+        return dataset_matches and protocol_matches
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible data."""
+        payload: dict[str, Any] = {"parameters": dict(self.parameters)}
+        if self.dataset is not None:
+            payload["dataset"] = self.dataset
+        if self.protocol is not None:
+            payload["protocol"] = self.protocol
         return payload
 
 
@@ -150,7 +215,10 @@ class BenchmarkConfig:
                                 protocol,
                             ),
                             dataset=dataset_config,
-                            detector=detector_config,
+                            detector=detector_config.for_experiment(
+                                dataset_config.id,
+                                protocol,
+                            ),
                             protocol=protocol,
                         )
                     )
@@ -188,7 +256,22 @@ def _evaluation_config(payload: object) -> BenchmarkEvaluationConfig:
     quantile = float(payload.get("threshold_quantile", 0.995))
     if not 0.0 < quantile < 1.0:
         raise BenchmarkConfigError("benchmark.evaluation.threshold_quantile must be in (0, 1).")
-    return BenchmarkEvaluationConfig(threshold_quantile=quantile)
+    policy = EvalPolicy.from_dict(
+        _optional_mapping(payload, "policy", "benchmark.evaluation.policy")
+    )
+    dataset_policy_payload = payload.get("dataset_policies", {})
+    if not isinstance(dataset_policy_payload, dict):
+        raise BenchmarkConfigError("benchmark.evaluation.dataset_policies must be a table.")
+    dataset_policies = {
+        str(dataset): EvalPolicy.from_dict(dict(policy_payload))
+        for dataset, policy_payload in dataset_policy_payload.items()
+        if _is_mapping(policy_payload, f"benchmark.evaluation.dataset_policies.{dataset}")
+    }
+    return BenchmarkEvaluationConfig(
+        threshold_quantile=quantile,
+        policy=policy,
+        dataset_policies=dataset_policies,
+    )
 
 
 def _dataset_configs(payload: object) -> list[BenchmarkDatasetConfig]:
@@ -219,6 +302,10 @@ def _detector_configs(payload: object) -> list[BenchmarkDetectorConfig]:
             raise BenchmarkConfigError(f"detectors[{index}].parameters must be an object.")
         datasets = _optional_string_list(item, "datasets", f"detectors[{index}].datasets")
         protocols = _optional_string_list(item, "protocols", f"detectors[{index}].protocols")
+        parameter_overrides = _parameter_overrides(
+            item.get("parameter_overrides", []),
+            f"detectors[{index}].parameter_overrides",
+        )
         _validate_safe_id(item_id, f"detectors[{index}].id")
         detectors.append(
             BenchmarkDetectorConfig(
@@ -227,9 +314,38 @@ def _detector_configs(payload: object) -> list[BenchmarkDetectorConfig]:
                 parameters=parameters,
                 datasets=datasets,
                 protocols=protocols,
+                parameter_overrides=parameter_overrides,
             )
         )
     return detectors
+
+
+def _parameter_overrides(payload: object, label: str) -> list[BenchmarkParameterOverride]:
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        raise BenchmarkConfigError(f"{label} must be an array of tables.")
+    overrides: list[BenchmarkParameterOverride] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise BenchmarkConfigError(f"{label}[{index}] must be a table.")
+        parameters = item.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise BenchmarkConfigError(f"{label}[{index}].parameters must be an object.")
+        dataset = _optional_string(item.get("dataset"))
+        protocol = _optional_string(item.get("protocol"))
+        if dataset is not None:
+            _validate_safe_id(dataset, f"{label}[{index}].dataset")
+        if protocol is not None:
+            _validate_safe_id(protocol, f"{label}[{index}].protocol")
+        overrides.append(
+            BenchmarkParameterOverride(
+                dataset=dataset,
+                protocol=protocol,
+                parameters=dict(parameters),
+            )
+        )
+    return overrides
 
 
 def _required_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
@@ -237,6 +353,21 @@ def _required_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise BenchmarkConfigError(f"{key} must be a table.")
     return value
+
+
+def _optional_mapping(payload: dict[str, Any], key: str, label: str) -> dict[str, Any]:
+    value = payload.get(key, {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise BenchmarkConfigError(f"{label} must be a table.")
+    return dict(value)
+
+
+def _is_mapping(value: object, label: str) -> bool:
+    if not isinstance(value, dict):
+        raise BenchmarkConfigError(f"{label} must be a table.")
+    return True
 
 
 def _required_string(payload: dict[str, Any], key: str, label: str) -> str:
@@ -268,6 +399,13 @@ def _optional_string_list(
     return _required_string_list(payload, key, label)
 
 
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _validate_detector_filters(
     detectors: list[BenchmarkDetectorConfig],
     datasets: list[BenchmarkDatasetConfig],
@@ -287,6 +425,17 @@ def _validate_detector_filters(
             if protocol not in protocol_ids:
                 raise BenchmarkConfigError(
                     f"Detector {detector.id!r} references unknown protocol {protocol!r}."
+                )
+        for override in detector.parameter_overrides:
+            if override.dataset is not None and override.dataset not in dataset_ids:
+                raise BenchmarkConfigError(
+                    f"Detector {detector.id!r} override references unknown dataset "
+                    f"{override.dataset!r}."
+                )
+            if override.protocol is not None and override.protocol not in protocol_ids:
+                raise BenchmarkConfigError(
+                    f"Detector {detector.id!r} override references unknown protocol "
+                    f"{override.protocol!r}."
                 )
 
 

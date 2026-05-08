@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "industrial_tsad_eval"
@@ -30,7 +31,7 @@ def test_public_repo_has_no_personal_review_meta_wording():
 
 
 def test_public_repo_uses_neutral_assistant_replay_language():
-    forbidden = ["rq" + "3"]
+    forbidden = ["rq" + "3", "rq" + "4"]
     roots = [
         PROJECT_ROOT / "README.md",
         PROJECT_ROOT / "docs",
@@ -43,6 +44,37 @@ def test_public_repo_uses_neutral_assistant_replay_language():
         relative = str(path.relative_to(PROJECT_ROOT)).lower()
         text = path.read_text(encoding="utf-8").lower()
         if any(term in relative or term in text for term in forbidden):
+            offenders.append(str(path.relative_to(PROJECT_ROOT)))
+
+    assert offenders == []
+
+
+def test_temporary_thesis_draft_pdf_is_ignored():
+    result = subprocess.run(
+        ["git", "check-ignore", "latest_draft.pdf"],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+
+
+def test_tracked_files_do_not_reference_old_repo_paths():
+    forbidden = ["tsad-" + "toolkit", "pycharmprojects/tsad-" + "toolkit"]
+    offenders: list[str] = []
+    for path in _text_files(
+        [
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "docs",
+            PROJECT_ROOT / "examples",
+            PROJECT_ROOT / "src",
+            PROJECT_ROOT / "tests",
+        ]
+    ):
+        text = path.read_text(encoding="utf-8").lower()
+        if any(term in text for term in forbidden):
             offenders.append(str(path.relative_to(PROJECT_ROOT)))
 
     assert offenders == []

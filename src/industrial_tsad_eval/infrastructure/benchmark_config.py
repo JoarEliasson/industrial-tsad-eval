@@ -9,6 +9,7 @@ from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
     BenchmarkDatasetConfig,
     BenchmarkDetectorConfig,
+    BenchmarkParameterOverride,
 )
 
 try:
@@ -61,7 +62,18 @@ def render_benchmark_config_toml(config: BenchmarkConfig) -> str:
         "[benchmark.evaluation]",
         f"threshold_quantile = {config.evaluation.threshold_quantile}",
         "",
+        "[benchmark.evaluation.policy]",
+        *_policy_lines(config.evaluation.policy.to_dict()),
+        "",
     ]
+    for dataset, policy in sorted(config.evaluation.dataset_policies.items()):
+        lines.extend(
+            [
+                f'[benchmark.evaluation.dataset_policies."{_toml_string(dataset)}"]',
+                *_policy_lines(policy.to_dict()),
+                "",
+            ]
+        )
     for dataset_config in config.datasets:
         lines.extend(
             [
@@ -86,9 +98,11 @@ def render_benchmark_config_toml(config: BenchmarkConfig) -> str:
         lines.extend(
             [
                 f"parameters = {_inline_table(detector_config.parameters)}",
-                "",
             ]
         )
+        for override in detector_config.parameter_overrides:
+            lines.extend(_override_lines(override))
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -111,6 +125,7 @@ def _resolve_prepared_paths(config: BenchmarkConfig, base_dir: Path) -> Benchmar
             protocols=list(detector_config.protocols)
             if detector_config.protocols is not None
             else None,
+            parameter_overrides=list(detector_config.parameter_overrides),
         )
         for detector_config in config.detectors
     ]
@@ -137,6 +152,25 @@ def _inline_table(payload: dict[str, Any]) -> str:
     return "{ " + ", ".join(parts) + " }"
 
 
+def _override_lines(override: BenchmarkParameterOverride) -> list[str]:
+    lines = ["[[detectors.parameter_overrides]]"]
+    if override.dataset is not None:
+        lines.append(f'dataset = "{_toml_string(override.dataset)}"')
+    if override.protocol is not None:
+        lines.append(f'protocol = "{_toml_string(override.protocol)}"')
+    lines.append(f"parameters = {_inline_table(override.parameters)}")
+    return lines
+
+
+def _policy_lines(payload: dict[str, Any]) -> list[str]:
+    omitted = {"policy_version", "dataset", "protocol"}
+    return [
+        f"{key} = {_toml_value(value)}"
+        for key, value in sorted(payload.items())
+        if key not in omitted and value not in (None, [], {})
+    ]
+
+
 def _string_list(values: list[str]) -> str:
     return "[" + ", ".join(f'"{_toml_string(value)}"' for value in values) + "]"
 
@@ -148,6 +182,8 @@ def _toml_value(value: Any) -> str:
         return str(value)
     if isinstance(value, str):
         return f'"{_toml_string(value)}"'
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     raise TypeError(f"Unsupported TOML parameter value: {value!r}")
 
 

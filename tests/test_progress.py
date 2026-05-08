@@ -131,11 +131,11 @@ def test_default_config_written_under_config_points_to_project_paths(tmp_path: P
     )
 
 
-def test_thesis_full_profile_lists_all_detector_plugins(tmp_path: Path):
+def test_thesis_full_profile_lists_current_draft_detector_plugins(tmp_path: Path):
     config_path = tmp_path / "full.toml"
     write_default_reproduction_config(config_path, profile="thesis-full")
 
     config = load_reproduction_config(config_path)
     detector_names = [detector.name for detector in config.benchmark.detectors]
 
-    assert detector_names == ["forecast-ridge", "forecast-lstm", "dra", "interfusion", "drcad"]
+    assert detector_names == ["forecast-ridge", "dra", "interfusion", "drcad"]

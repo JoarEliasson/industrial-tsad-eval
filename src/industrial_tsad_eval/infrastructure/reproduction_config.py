@@ -14,6 +14,7 @@ from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
     BenchmarkDatasetConfig,
     BenchmarkDetectorConfig,
+    BenchmarkParameterOverride,
 )
 from industrial_tsad_eval.domain.reproduction import ReproductionConfig
 
@@ -26,6 +27,21 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback.
 THESIS_ASSISTANT_QUERY_TOML = THESIS_ASSISTANT_QUERY_TEMPLATE.replace("\\", "\\\\").replace(
     '"', '\\"'
 )
+DRA_THESIS_PARAMS = (
+    "{ window = 100, train_stride = 10, score_stride = 1, "
+    "max_train_windows = 5000, epochs = 30, batch_size = 64, "
+    'seed = 1337, device = "auto" }'
+)
+INTERFUSION_THESIS_PARAMS = (
+    "{ window = 100, train_stride = 10, score_stride = 1, latent_dim = 3, "
+    "kl_warmup = 10, max_train_windows = 5000, epochs = 30, batch_size = 64, "
+    'seed = 1337, device = "auto" }'
+)
+DRCAD_THESIS_PARAMS = (
+    "{ window = 100, train_stride = 10, score_stride = 1, patch_size = 5, "
+    "d_model = 64, n_heads = 4, n_layers = 2, mlp_dim = 128, lr = 0.0001, "
+    'epochs = 10, batch_size = 64, seed = 1337, device = "auto" }'
+)
 
 THESIS_SMOKE_CONFIG_TOML = """[reproduction]
 name = "thesis-smoke"
@@ -34,6 +50,9 @@ run_xai = true
 run_profiles = false
 run_assistant = true
 xai_ks = [1, 3, 5]
+evidence_sources = ["oracle"]
+assistant_evidence_source = "oracle"
+profile_experiment_limit = 1
 
 [benchmark]
 name = "thesis-smoke"
@@ -73,6 +92,9 @@ run_xai = true
 run_profiles = true
 run_assistant = true
 xai_ks = [1, 3, 5]
+evidence_sources = ["oracle"]
+assistant_evidence_source = "oracle"
+profile_experiment_limit = 1
 
 [benchmark]
 name = "thesis-verification"
@@ -151,13 +173,17 @@ seed = 1337
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
 
 
-THESIS_FULL_CONFIG_TOML = """[reproduction]
+THESIS_FULL_CONFIG_TOML = (
+    """[reproduction]
 name = "thesis-full"
 run_evidence = true
 run_xai = true
 run_profiles = true
 run_assistant = true
 xai_ks = [1, 3, 5]
+evidence_sources = ["oracle", "operational"]
+assistant_evidence_source = "operational"
+profile_experiment_limit = 0
 
 [benchmark]
 name = "thesis-full"
@@ -165,6 +191,25 @@ protocols = ["naive", "all_in_one", "zero_shot"]
 
 [benchmark.evaluation]
 threshold_quantile = 0.995
+
+[benchmark.evaluation.policy]
+merge_gap_s = 10.0
+grace_s = 5.0
+threshold_quantile = 0.995
+compute = ["event", "delay", "far"]
+event_types = ["attack", "fault", "anomaly"]
+
+[benchmark.evaluation.dataset_policies.TEP]
+merge_gap_mode = "auto_period"
+merge_gap_skipped_samples = 1
+merge_gap_jitter_ratio = 0.1
+
+[benchmark.evaluation.dataset_policies.HAI]
+merge_gap_s = 30.0
+grace_s = 120.0
+
+[benchmark.evaluation.dataset_policies."HAI-CPPS"]
+grace_s = 6.0
 
 [[datasets]]
 id = "TEP"
@@ -188,24 +233,34 @@ name = "forecast-ridge"
 parameters = { window = 32, stride = 4, lags = 1, alpha = 1.0, standardize = true, seed = 1337 }
 
 [[detectors]]
-id = "forecast-lstm"
-name = "forecast-lstm"
-parameters = { window = 32, epochs = 5, device = "auto" }
-
-[[detectors]]
 id = "dra"
 name = "dra"
-parameters = { window = 32, train_stride = 8, score_stride = 8, epochs = 5, device = "auto" }
+parameters = __DRA_THESIS_PARAMS__
+
+[[detectors.parameter_overrides]]
+dataset = "TEP"
+protocol = "naive"
+parameters = { train_stride = 5 }
 
 [[detectors]]
 id = "interfusion"
 name = "interfusion"
-parameters = { window = 32, epochs = 5, device = "auto" }
+parameters = __INTERFUSION_THESIS_PARAMS__
+
+[[detectors.parameter_overrides]]
+dataset = "TEP"
+protocol = "naive"
+parameters = { train_stride = 5 }
 
 [[detectors]]
 id = "drcad"
 name = "drcad"
-parameters = { window = 32, patch_size = 8, epochs = 5, device = "auto" }
+parameters = __DRCAD_THESIS_PARAMS__
+
+[[detectors.parameter_overrides]]
+dataset = "TEP"
+protocol = "naive"
+parameters = { train_stride = 5 }
 
 [assistant]
 suite_id = "thesis-assistant-all-datasets"
@@ -226,6 +281,10 @@ top_p = 1.0
 max_tokens = 700
 seed = 1337
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
+    .replace("__DRA_THESIS_PARAMS__", DRA_THESIS_PARAMS)
+    .replace("__INTERFUSION_THESIS_PARAMS__", INTERFUSION_THESIS_PARAMS)
+    .replace("__DRCAD_THESIS_PARAMS__", DRCAD_THESIS_PARAMS)
+)
 
 
 PROVIDER_CONFIG_TOML = """# Provider examples for assistant replay.
@@ -312,6 +371,12 @@ def render_reproduction_config_toml(config: ReproductionConfig) -> str:
         f"run_profiles = {_bool(config.run_profiles)}",
         f"run_assistant = {_bool(config.run_assistant)}",
         "xai_ks = [" + ", ".join(str(item) for item in config.xai_ks) + "]",
+        "evidence_sources = " + _string_list(config.evidence_sources),
+        f'assistant_evidence_source = "{_toml_string(config.assistant_evidence_source)}"',
+        "profile_experiment_limit = "
+        + (
+            "0" if config.profile_experiment_limit is None else str(config.profile_experiment_limit)
+        ),
         "",
         *_benchmark_lines(config.benchmark),
         "",
@@ -337,6 +402,9 @@ def _resolve_reproduction_paths(config: ReproductionConfig, base_dir: Path) -> R
         run_profiles=config.run_profiles,
         run_assistant=config.run_assistant,
         xai_ks=list(config.xai_ks),
+        evidence_sources=list(config.evidence_sources),
+        assistant_evidence_source=config.assistant_evidence_source,
+        profile_experiment_limit=config.profile_experiment_limit,
     )
 
 
@@ -358,6 +426,7 @@ def _resolve_benchmark_paths(config: BenchmarkConfig, base_dir: Path) -> Benchma
                 parameters=dict(detector.parameters),
                 datasets=list(detector.datasets) if detector.datasets is not None else None,
                 protocols=list(detector.protocols) if detector.protocols is not None else None,
+                parameter_overrides=list(detector.parameter_overrides),
             )
             for detector in config.detectors
         ],
@@ -423,7 +492,18 @@ def _benchmark_lines(config: BenchmarkConfig) -> list[str]:
         "[benchmark.evaluation]",
         f"threshold_quantile = {config.evaluation.threshold_quantile}",
         "",
+        "[benchmark.evaluation.policy]",
+        *_policy_lines(config.evaluation.policy.to_dict()),
+        "",
     ]
+    for dataset_id, policy in sorted(config.evaluation.dataset_policies.items()):
+        lines.extend(
+            [
+                f'[benchmark.evaluation.dataset_policies."{_toml_string(dataset_id)}"]',
+                *_policy_lines(policy.to_dict()),
+                "",
+            ]
+        )
     for dataset in config.datasets:
         lines.extend(
             [
@@ -448,9 +528,11 @@ def _benchmark_lines(config: BenchmarkConfig) -> list[str]:
         lines.extend(
             [
                 f"parameters = {_inline_table(detector.parameters)}",
-                "",
             ]
         )
+        for override in detector.parameter_overrides:
+            lines.extend(_override_lines(override))
+        lines.append("")
     return lines
 
 
@@ -499,6 +581,25 @@ def _inline_table(payload: dict[str, Any]) -> str:
     return "{ " + ", ".join(parts) + " }"
 
 
+def _override_lines(override: BenchmarkParameterOverride) -> list[str]:
+    lines = ["[[detectors.parameter_overrides]]"]
+    if override.dataset is not None:
+        lines.append(f'dataset = "{_toml_string(override.dataset)}"')
+    if override.protocol is not None:
+        lines.append(f'protocol = "{_toml_string(override.protocol)}"')
+    lines.append(f"parameters = {_inline_table(override.parameters)}")
+    return lines
+
+
+def _policy_lines(payload: dict[str, Any]) -> list[str]:
+    omitted = {"policy_version", "dataset", "protocol"}
+    return [
+        f"{key} = {_toml_value(value)}"
+        for key, value in sorted(payload.items())
+        if key not in omitted and value not in (None, [], {})
+    ]
+
+
 def _string_list(values: list[str]) -> str:
     return "[" + ", ".join(f'"{_toml_string(value)}"' for value in values) + "]"
 
@@ -510,6 +611,8 @@ def _toml_value(value: Any) -> str:
         return str(value)
     if isinstance(value, str):
         return f'"{_toml_string(value)}"'
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     raise TypeError(f"Unsupported TOML value: {value!r}")
 
 

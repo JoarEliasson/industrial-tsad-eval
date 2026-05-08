@@ -59,6 +59,8 @@ class EvaluateEvidence:
 
         prepared_repository = LocalPreparedDatasetRepository(self.config.prepared)
         evidence_repository = LocalEvidenceRepository(self.config.evidence)
+        evidence_manifest = evidence_repository.manifest()
+        evidence_source = str(evidence_manifest.get("event_source", "unknown"))
         tag_map = GroundTruthTagMap.from_dict(read_json(Path(self.config.gt_map)))
         features = _feature_columns(prepared_repository)
         baseline = _RobustBaseline.fit(prepared_repository, self.config.protocol, features)
@@ -118,6 +120,7 @@ class EvaluateEvidence:
         metrics = {
             "dataset": prepared_repository.dataset_name,
             "protocol": self.config.protocol,
+            "evidence_source": evidence_source,
             "bundle_count": len(bundles),
             "valid_bundle_count": valid_count,
             "hitrate_at_k": {
@@ -266,6 +269,7 @@ def _summary_row(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "dataset": metrics.get("dataset"),
         "protocol": metrics.get("protocol"),
+        "evidence_source": metrics.get("evidence_source"),
         "bundle_count": metrics.get("bundle_count"),
         "valid_bundle_count": metrics.get("valid_bundle_count"),
         "hitrate_at_k": metrics.get("hitrate_at_k"),

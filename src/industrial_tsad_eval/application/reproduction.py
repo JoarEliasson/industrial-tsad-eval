@@ -24,6 +24,7 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluate,
     ProfileScoreEvaluateConfig,
 )
+from industrial_tsad_eval.application.thesis_exports import write_thesis_draft_exports
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
 from industrial_tsad_eval.domain.benchmark import BenchmarkExperimentResult, sanitize_run_id
@@ -149,7 +150,8 @@ class RunThesisReproduction:
         progress = CompositeProgressSink(
             [LocalProgressSink(run_root, self.run_id), self.progress_sink]
         )
-        writer.write_text("config/reproduction.toml", render_reproduction_config_toml(self.config))
+        reproduction_toml = render_reproduction_config_toml(self.config)
+        writer.write_text("config/reproduction.toml", reproduction_toml)
         if self.source_config is not None and self.source_config.exists():
             writer.write_text(
                 "config/source_reproduction.toml",
@@ -255,7 +257,7 @@ class RunThesisReproduction:
         evidence_dirs = self._run_evidence_xai(run_root, successful, stages, progress)
         self._run_profiles(run_root, successful, stages, progress)
         self._run_assistant(run_root, successful, evidence_dirs, stages, progress)
-        self._write_summaries(run_root, benchmark_result.results, stages)
+        self._write_summaries(run_root, benchmark_result.results, stages, reproduction_toml)
         progress.emit(
             ProgressEvent(
                 run_id=self.run_id,
@@ -294,8 +296,8 @@ class RunThesisReproduction:
         experiments: list[BenchmarkExperimentResult],
         stages: list[ReproductionStageResult],
         progress: ProgressSink,
-    ) -> dict[str, Path]:
-        evidence_dirs: dict[str, Path] = {}
+    ) -> dict[tuple[str, str], Path]:
+        evidence_dirs: dict[tuple[str, str], Path] = {}
         if not self.config.run_evidence:
             stages.append(ReproductionStageResult("evidence", "skipped"))
             progress.emit(
@@ -310,120 +312,132 @@ class RunThesisReproduction:
                 )
             )
             return evidence_dirs
-        for ordinal, experiment in enumerate(experiments, start=1):
-            evidence_dir = run_root / "evidence" / experiment.experiment_id
+        total = len(experiments) * len(self.config.evidence_sources)
+        for experiment_ordinal, experiment in enumerate(experiments, start=1):
             dataset_config = _dataset_config(self.config, experiment.dataset)
-            started = time.perf_counter()
-            progress.emit(
-                ProgressEvent(
-                    run_id=self.run_id,
-                    stage="evidence",
-                    item_id=experiment.experiment_id,
-                    status="running",
-                    ordinal=ordinal,
-                    total=len(experiments),
-                    path=str(evidence_dir),
+            for source_index, evidence_source in enumerate(self.config.evidence_sources):
+                ordinal = (
+                    (experiment_ordinal - 1) * len(self.config.evidence_sources) + source_index + 1
                 )
-            )
-            try:
-                GenerateEvidence(
-                    prepared=dataset_config.prepared,
-                    scores=str(experiment.scores_dir),
-                    eval_dir=str(experiment.eval_dir),
-                    out=evidence_dir,
-                    event_source="oracle",
-                    protocol=experiment.protocol,
-                ).run()
-                evidence_dirs[experiment.experiment_id] = evidence_dir
-                stages.append(
-                    ReproductionStageResult(
-                        f"evidence:{experiment.experiment_id}",
-                        "completed",
-                        path=str(evidence_dir),
-                    )
-                )
+                evidence_dir = run_root / "evidence" / experiment.experiment_id / evidence_source
+                item_id = f"{experiment.experiment_id}:{evidence_source}"
+                started = time.perf_counter()
                 progress.emit(
                     ProgressEvent(
                         run_id=self.run_id,
                         stage="evidence",
-                        item_id=experiment.experiment_id,
-                        status="completed",
+                        item_id=item_id,
+                        status="running",
                         ordinal=ordinal,
-                        total=len(experiments),
+                        total=total,
                         path=str(evidence_dir),
-                        duration_s=round(time.perf_counter() - started, 6),
                     )
                 )
-                if self.config.run_xai:
-                    gt_map = run_root / "xai" / experiment.experiment_id / "gt_map.json"
-                    xai_dir = run_root / "xai" / experiment.experiment_id
-                    xai_started = time.perf_counter()
-                    progress.emit(
-                        ProgressEvent(
-                            run_id=self.run_id,
-                            stage="xai",
-                            item_id=experiment.experiment_id,
-                            status="running",
-                            ordinal=ordinal,
-                            total=len(experiments),
-                            path=str(xai_dir),
-                        )
-                    )
-                    BuildGroundTruthTagMap(prepared=dataset_config.prepared, out=gt_map).run()
-                    xai_result = EvaluateEvidence(
-                        EvaluateEvidenceConfig(
-                            prepared=dataset_config.prepared,
-                            evidence=evidence_dir,
-                            gt_map=gt_map,
-                            out=xai_dir,
-                            ks=list(self.config.xai_ks),
-                            protocol=experiment.protocol,
-                        )
+                try:
+                    GenerateEvidence(
+                        prepared=dataset_config.prepared,
+                        scores=str(experiment.scores_dir),
+                        eval_dir=str(experiment.eval_dir),
+                        out=evidence_dir,
+                        event_source=evidence_source,
+                        protocol=experiment.protocol,
                     ).run()
+                    evidence_dirs[(experiment.experiment_id, evidence_source)] = evidence_dir
                     stages.append(
                         ReproductionStageResult(
-                            f"xai:{experiment.experiment_id}",
+                            f"evidence:{item_id}",
                             "completed",
-                            path=str(xai_dir),
-                            metrics=xai_result.metrics,
+                            path=str(evidence_dir),
                         )
                     )
                     progress.emit(
                         ProgressEvent(
                             run_id=self.run_id,
-                            stage="xai",
-                            item_id=experiment.experiment_id,
+                            stage="evidence",
+                            item_id=item_id,
                             status="completed",
                             ordinal=ordinal,
-                            total=len(experiments),
-                            path=str(xai_dir),
-                            duration_s=round(time.perf_counter() - xai_started, 6),
-                            metrics=xai_result.metrics,
+                            total=total,
+                            path=str(evidence_dir),
+                            duration_s=round(time.perf_counter() - started, 6),
                         )
                     )
-            except Exception as exc:
-                error = f"{type(exc).__name__}: {exc}"
-                stages.append(
-                    ReproductionStageResult(
-                        f"evidence_xai:{experiment.experiment_id}",
-                        "failed",
-                        path=str(evidence_dir),
-                        error=error,
+                    if self.config.run_xai:
+                        gt_map = (
+                            run_root
+                            / "xai"
+                            / experiment.experiment_id
+                            / evidence_source
+                            / "gt_map.json"
+                        )
+                        xai_dir = run_root / "xai" / experiment.experiment_id / evidence_source
+                        xai_started = time.perf_counter()
+                        progress.emit(
+                            ProgressEvent(
+                                run_id=self.run_id,
+                                stage="xai",
+                                item_id=item_id,
+                                status="running",
+                                ordinal=ordinal,
+                                total=total,
+                                path=str(xai_dir),
+                            )
+                        )
+                        BuildGroundTruthTagMap(prepared=dataset_config.prepared, out=gt_map).run()
+                        xai_result = EvaluateEvidence(
+                            EvaluateEvidenceConfig(
+                                prepared=dataset_config.prepared,
+                                evidence=evidence_dir,
+                                gt_map=gt_map,
+                                out=xai_dir,
+                                ks=list(self.config.xai_ks),
+                                protocol=experiment.protocol,
+                            )
+                        ).run()
+                        stages.append(
+                            ReproductionStageResult(
+                                f"xai:{item_id}",
+                                "completed",
+                                path=str(xai_dir),
+                                metrics=xai_result.metrics,
+                            )
+                        )
+                        progress.emit(
+                            ProgressEvent(
+                                run_id=self.run_id,
+                                stage="xai",
+                                item_id=item_id,
+                                status="completed",
+                                ordinal=ordinal,
+                                total=total,
+                                path=str(xai_dir),
+                                duration_s=round(time.perf_counter() - xai_started, 6),
+                                metrics=xai_result.metrics,
+                            )
+                        )
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+                    stages.append(
+                        ReproductionStageResult(
+                            f"evidence_xai:{item_id}",
+                            "failed",
+                            path=str(evidence_dir),
+                            error=error,
+                        )
                     )
-                )
-                progress.emit(
-                    ProgressEvent(
-                        run_id=self.run_id,
-                        stage="evidence",
-                        item_id=experiment.experiment_id,
-                        status="failed",
-                        ordinal=ordinal,
-                        total=len(experiments),
-                        path=str(evidence_dir),
-                        duration_s=round(time.perf_counter() - started, 6),
-                        error=error,
+                    progress.emit(
+                        ProgressEvent(
+                            run_id=self.run_id,
+                            stage="evidence",
+                            item_id=item_id,
+                            status="failed",
+                            ordinal=ordinal,
+                            total=total,
+                            path=str(evidence_dir),
+                            duration_s=round(time.perf_counter() - started, 6),
+                            error=error,
+                        )
                     )
-                )
         if self.config.run_xai and not experiments:
             stages.append(
                 ReproductionStageResult(
@@ -469,75 +483,84 @@ class RunThesisReproduction:
                 )
             )
             return
-        experiment = experiments[0]
-        dataset_config = _dataset_config(self.config, experiment.dataset)
-        detector_config = _detector_config(self.config, experiment.detector)
-        started = time.perf_counter()
-        progress.emit(
-            ProgressEvent(
-                run_id=self.run_id,
-                stage="profiles",
-                item_id=experiment.experiment_id,
-                status="running",
-                ordinal=3,
-                total=5,
-                path=str(run_root / "profiles"),
-            )
-        )
-        try:
-            result = ProfileScoreEvaluate(
-                detector_registry=self.detector_registry,
-                config=ProfileScoreEvaluateConfig(
-                    prepared=dataset_config.prepared,
-                    detector_name=detector_config.name,
-                    detector_parameters=detector_config.parameters,
-                    protocol=experiment.protocol,
-                    out=run_root / "profiles",
-                    profile_id=experiment.experiment_id,
-                ),
-            ).run()
-            stages.append(ReproductionStageResult("profiles", "completed", path=result.profile_dir))
+        selected = experiments[: self.config.profile_experiment_limit]
+        if self.config.profile_experiment_limit is None:
+            selected = list(experiments)
+        for ordinal, experiment in enumerate(selected, start=1):
+            dataset_config = _dataset_config(self.config, experiment.dataset)
+            detector_config = _detector_config(self.config, experiment.detector)
+            started = time.perf_counter()
             progress.emit(
                 ProgressEvent(
                     run_id=self.run_id,
                     stage="profiles",
                     item_id=experiment.experiment_id,
-                    status="completed",
-                    ordinal=3,
-                    total=5,
-                    path=result.profile_dir,
-                    duration_s=round(time.perf_counter() - started, 6),
-                )
-            )
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            stages.append(
-                ReproductionStageResult(
-                    "profiles",
-                    "failed",
+                    status="running",
+                    ordinal=ordinal,
+                    total=len(selected),
                     path=str(run_root / "profiles"),
-                    error=error,
                 )
             )
-            progress.emit(
-                ProgressEvent(
-                    run_id=self.run_id,
-                    stage="profiles",
-                    item_id=experiment.experiment_id,
-                    status="failed",
-                    ordinal=3,
-                    total=5,
-                    path=str(run_root / "profiles"),
-                    duration_s=round(time.perf_counter() - started, 6),
-                    error=error,
+            try:
+                result = ProfileScoreEvaluate(
+                    detector_registry=self.detector_registry,
+                    config=ProfileScoreEvaluateConfig(
+                        prepared=dataset_config.prepared,
+                        detector_name=detector_config.name,
+                        detector_parameters=detector_config.parameters,
+                        protocol=experiment.protocol,
+                        out=run_root / "profiles",
+                        profile_id=experiment.experiment_id,
+                    ),
+                ).run()
+                stages.append(
+                    ReproductionStageResult(
+                        f"profiles:{experiment.experiment_id}",
+                        "completed",
+                        path=result.profile_dir,
+                    )
                 )
-            )
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.run_id,
+                        stage="profiles",
+                        item_id=experiment.experiment_id,
+                        status="completed",
+                        ordinal=ordinal,
+                        total=len(selected),
+                        path=result.profile_dir,
+                        duration_s=round(time.perf_counter() - started, 6),
+                    )
+                )
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                stages.append(
+                    ReproductionStageResult(
+                        f"profiles:{experiment.experiment_id}",
+                        "failed",
+                        path=str(run_root / "profiles"),
+                        error=error,
+                    )
+                )
+                progress.emit(
+                    ProgressEvent(
+                        run_id=self.run_id,
+                        stage="profiles",
+                        item_id=experiment.experiment_id,
+                        status="failed",
+                        ordinal=ordinal,
+                        total=len(selected),
+                        path=str(run_root / "profiles"),
+                        duration_s=round(time.perf_counter() - started, 6),
+                        error=error,
+                    )
+                )
 
     def _run_assistant(
         self,
         run_root: Path,
         experiments: list[BenchmarkExperimentResult],
-        evidence_dirs: dict[str, Path],
+        evidence_dirs: dict[tuple[str, str], Path],
         stages: list[ReproductionStageResult],
         progress: ProgressSink,
     ) -> None:
@@ -557,7 +580,9 @@ class RunThesisReproduction:
             return
         assistant_rows: list[dict[str, Any]] = []
         for ordinal, experiment in enumerate(experiments, start=1):
-            evidence_dir = evidence_dirs.get(experiment.experiment_id)
+            evidence_dir = evidence_dirs.get(
+                (experiment.experiment_id, self.config.assistant_evidence_source)
+            )
             if evidence_dir is None:
                 continue
             dataset_config = _dataset_config(self.config, experiment.dataset)
@@ -658,6 +683,7 @@ class RunThesisReproduction:
         run_root: Path,
         benchmark_results: list[BenchmarkExperimentResult],
         stages: list[ReproductionStageResult],
+        reproduction_toml: str,
     ) -> None:
         writer = LocalArtifactWriter(run_root)
         benchmark_summary = run_root / "benchmark" / "summary.csv"
@@ -681,6 +707,11 @@ class RunThesisReproduction:
             },
         )
         writer.write_text("summaries/thesis_crosswalk.md", _crosswalk_markdown())
+        write_thesis_draft_exports(
+            run_root=run_root,
+            config=self.config,
+            reproduction_toml=reproduction_toml,
+        )
         stages.append(
             ReproductionStageResult(
                 "summaries",
@@ -719,13 +750,16 @@ def _collect_xai_rows(root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if not root.exists():
         return rows
-    for summary_path in sorted(root.glob("*/summary.csv")):
+    for summary_path in sorted(root.rglob("summary.csv")):
         text = summary_path.read_text(encoding="utf-8")
         if not text.strip():
             continue
         reader = csv.DictReader(io.StringIO(text))
         for row in reader:
-            row["experiment_id"] = summary_path.parent.name
+            relative = summary_path.relative_to(root)
+            row["experiment_id"] = relative.parts[0] if relative.parts else ""
+            if "evidence_source" not in row:
+                row["evidence_source"] = relative.parts[1] if len(relative.parts) > 2 else "oracle"
             rows.append(dict(row))
     return rows
 

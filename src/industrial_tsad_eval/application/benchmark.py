@@ -20,7 +20,6 @@ from industrial_tsad_eval.domain.benchmark import (
     sanitize_run_id,
 )
 from industrial_tsad_eval.domain.errors import BenchmarkRunError, IndustrialTSADError
-from industrial_tsad_eval.domain.policy import EvalPolicy
 from industrial_tsad_eval.domain.progress import CompositeProgressSink, ProgressEvent, ProgressSink
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.benchmark_config import render_benchmark_config_toml
@@ -235,9 +234,9 @@ class RunBenchmark:
                 scores=scores_dir,
                 out=eval_dir,
                 protocol=experiment.protocol,
-                policy=EvalPolicy(
-                    protocol=experiment.protocol,
-                    threshold_quantile=self.config.evaluation.threshold_quantile,
+                policy=self.config.evaluation.policy_for(
+                    experiment.dataset.id,
+                    experiment.protocol,
                 ),
             ).run()
             result = BenchmarkExperimentResult(
@@ -257,6 +256,8 @@ class RunBenchmark:
                     **result.to_dict(),
                     "finished_at_utc": _utc_now(),
                     "runs_scored": score_result.runs_scored,
+                    "detector_parameters": dict(experiment.detector.parameters),
+                    "evaluation_policy": eval_result.metrics.get("policy"),
                 },
             )
             return result

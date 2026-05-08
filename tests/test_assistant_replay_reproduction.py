@@ -406,7 +406,29 @@ def test_reproduction_config_and_cli_smoke_run(tmp_path: Path, opcua_prepared: P
     assert (run_root / "benchmark" / "summary.json").exists()
     assert (run_root / "assistant" / "assistant_summary.json").exists()
     assert (run_root / "summaries" / "thesis_crosswalk.md").exists()
+    assert (run_root / "summaries" / "detection_tables.csv").exists()
+    assert (run_root / "summaries" / "explanation_results.csv").exists()
+    assert (run_root / "summaries" / "explanation_results_split_summary.csv").exists()
+    assert (run_root / "summaries" / "assistant_faithfulness_logs.csv").exists()
+    assert (run_root / "summaries" / "profiling_logs.csv").exists()
+    assert (run_root / "summaries" / "dataset_splits.json").exists()
+    assert (run_root / "summaries" / "hyperparameters.toml").exists()
+    assert (run_root / "summaries" / "scoring_config.json").exists()
+    assert (run_root / "summaries" / "planner_prompt.txt").exists()
+    assert (run_root / "summaries" / "referee_prompt.txt").exists()
+    assert (
+        run_root / "summaries" / "assistant" / "schemas" / "draft_response.schema.json"
+    ).exists()
     assert (run_root / "progress_snapshot.json").exists()
+    assert "Return JSON matching DraftResponse only." in (
+        run_root / "summaries" / "planner_prompt.txt"
+    ).read_text(encoding="utf-8")
+    claim_schema = json.loads(
+        (
+            run_root / "summaries" / "assistant" / "schemas" / "claim_evaluation.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert claim_schema["title"] == "ClaimEvaluation"
     status = runner.invoke(app, ["reproduce", "status", "--run", str(run_root)])
     assert status.exit_code == 0, status.output
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
@@ -430,6 +452,52 @@ def test_reproduction_cli_writes_verification_profile(tmp_path: Path):
 
     assert result.exit_code == 0, result.output
     assert "forecast-lstm-tiny" in config_path.read_text(encoding="utf-8")
+
+
+def test_thesis_full_profile_matches_current_draft_parameters(tmp_path: Path):
+    config_path = tmp_path / "full.toml"
+    write_default_reproduction_config(config_path, profile="thesis-full")
+
+    config = load_reproduction_config(config_path)
+    experiments = {item.experiment_id: item for item in config.benchmark.experiments()}
+
+    assert config.evidence_sources == ["oracle", "operational"]
+    assert config.assistant_evidence_source == "operational"
+    assert config.profile_experiment_limit is None
+    assert [detector.id for detector in config.benchmark.detectors] == [
+        "forecast-ridge",
+        "dra",
+        "interfusion",
+        "drcad",
+    ]
+    assert experiments["TEP__dra__naive"].detector.parameters["window"] == 100
+    assert experiments["TEP__dra__naive"].detector.parameters["train_stride"] == 5
+    assert experiments["SWaT__dra__all_in_one"].detector.parameters["train_stride"] == 10
+    assert experiments["SWaT__dra__all_in_one"].detector.parameters["score_stride"] == 1
+    assert experiments["SWaT__interfusion__naive"].detector.parameters["latent_dim"] == 3
+    assert experiments["SWaT__interfusion__naive"].detector.parameters["kl_warmup"] == 10
+    assert experiments["HAI-CPPS__drcad__zero_shot"].detector.parameters["patch_size"] == 5
+    assert experiments["HAI-CPPS__drcad__zero_shot"].detector.parameters["lr"] == 0.0001
+
+
+def test_thesis_full_profile_matches_current_draft_scoring_policy(tmp_path: Path):
+    config_path = tmp_path / "full.toml"
+    write_default_reproduction_config(config_path, profile="thesis-full")
+    config = load_reproduction_config(config_path)
+
+    default_policy = config.benchmark.evaluation.policy_for("SWaT", "naive")
+    tep_policy = config.benchmark.evaluation.policy_for("TEP", "naive")
+    hai_policy = config.benchmark.evaluation.policy_for("HAI", "all_in_one")
+    cpps_policy = config.benchmark.evaluation.policy_for("HAI-CPPS", "zero_shot")
+
+    assert default_policy.merge_gap_s == 10.0
+    assert default_policy.grace_s == 5.0
+    assert tep_policy.merge_gap_mode == "auto_period"
+    assert tep_policy.merge_gap_skipped_samples == 1
+    assert tep_policy.merge_gap_jitter_ratio == 0.1
+    assert hai_policy.merge_gap_s == 30.0
+    assert hai_policy.grace_s == 120.0
+    assert cpps_policy.grace_s == 6.0
 
 
 def test_assistant_cli_commands(tmp_path: Path, opcua_prepared: Path):
