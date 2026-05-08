@@ -23,3 +23,4 @@ config/*.docker.toml
 examples/generated/
 prepared/
 scores/
+latest_draft.pdf
