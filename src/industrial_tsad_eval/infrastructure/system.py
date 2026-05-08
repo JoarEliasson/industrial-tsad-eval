@@ -71,6 +71,16 @@ def recommend_backend_for_gpus(gpus: list[SystemGpu]) -> ResolvedDevice:
     return "cpu"
 
 
+def recommend_backend_for_runtime(
+    gpus: list[SystemGpu],
+    runtime: TorchRuntimeStatus,
+) -> ResolvedDevice:
+    """Recommend a backend using torch readiness when OS GPU probes are sparse."""
+    if runtime.ready and runtime.resolved_device in {"cuda", "xpu"}:
+        return runtime.resolved_device
+    return recommend_backend_for_gpus(gpus)
+
+
 def detect_system_gpus() -> list[SystemGpu]:
     """Detect display adapters with safe platform-specific fallbacks."""
     system_name = platform.system().lower()
@@ -146,7 +156,7 @@ def capture_machine_environment(
         ram_total_gb=ram_gb,
         gpu_adapters=gpus,
         torch_runtime=runtime,
-        recommended_backend=recommend_backend_for_gpus(gpus),
+        recommended_backend=recommend_backend_for_runtime(gpus, runtime),
         machine_profile=profile,
         resolved_batch_size=resolve_batch_size(profile),
         git_commit=git_commit,

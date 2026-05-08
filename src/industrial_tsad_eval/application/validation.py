@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from industrial_tsad_eval.domain.validation import ValidationReport
 from industrial_tsad_eval.infrastructure.prepared_repository import LocalPreparedDatasetRepository
@@ -44,17 +46,19 @@ class ValidatePreparedDataset:
         run_ranges: dict[str, tuple[int, int, int]] = {}
         for run_dir in sorted(path.parent for path in runs_root.rglob("timeseries.parquet")):
             run_id = "/".join(run_dir.relative_to(runs_root).parts)
-            frame = pd.read_parquet(run_dir / "timeseries.parquet")
+            parquet_path = run_dir / "timeseries.parquet"
             meta_path = run_dir / "run_meta.json"
             if not meta_path.exists():
                 errors.append(f"Run {run_id}: missing run_meta.json")
-            _validate_run_frame(run_id, frame, schema_tags, errors, warnings)
-            if len(frame) > 0 and "ts_ns" in frame.columns:
-                run_ranges[run_id] = (
-                    int(frame["ts_ns"].iloc[0]),
-                    int(frame["ts_ns"].iloc[-1]),
-                    int(len(frame)),
-                )
+            run_range = _validate_run_parquet(
+                run_id,
+                parquet_path,
+                schema_tags,
+                errors,
+                warnings,
+            )
+            if run_range is not None:
+                run_ranges[run_id] = run_range
 
         _validate_events(self.prepared / "events" / "events.jsonl", run_ranges, errors)
         return ValidationReport(self.prepared.name, str(self.prepared), errors, warnings)
@@ -107,35 +111,64 @@ def _schema_browse_paths(schema_path: Path) -> set[str]:
     return {str(tag.get("browse_path")) for tag in tags if isinstance(tag, dict)}
 
 
-def _validate_run_frame(
+def _validate_run_parquet(
     run_id: str,
-    frame: pd.DataFrame,
+    parquet_path: Path,
     schema_tags: set[str],
     errors: list[str],
     warnings: list[str],
-) -> None:
-    if "ts_ns" not in frame.columns:
-        errors.append(f"Run {run_id}: missing ts_ns")
-        return
-    if frame["ts_ns"].dtype != np.int64:
-        errors.append(f"Run {run_id}: ts_ns dtype must be int64, got {frame['ts_ns'].dtype}")
+) -> tuple[int, int, int] | None:
+    try:
+        parquet_schema = pq.read_schema(parquet_path)
+    except Exception as exc:
+        errors.append(f"Run {run_id}: failed to read parquet schema: {exc}")
+        return None
 
-    timestamps = frame["ts_ns"].to_numpy(dtype=np.int64)
+    column_types = {field.name: field.type for field in parquet_schema}
+    if "ts_ns" not in column_types:
+        errors.append(f"Run {run_id}: missing ts_ns")
+        _validate_run_schema_columns(run_id, column_types, schema_tags, errors, warnings)
+        return None
+
+    if not pa.types.is_int64(column_types["ts_ns"]):
+        errors.append(f"Run {run_id}: ts_ns dtype must be int64, got {column_types['ts_ns']}")
+
+    _validate_run_schema_columns(run_id, column_types, schema_tags, errors, warnings)
+
+    try:
+        timestamps_frame = pd.read_parquet(parquet_path, columns=["ts_ns"])
+    except Exception as exc:
+        errors.append(f"Run {run_id}: failed to read ts_ns column: {exc}")
+        return None
+
+    timestamps_series = timestamps_frame["ts_ns"]
+    if timestamps_series.dtype != np.int64:
+        errors.append(f"Run {run_id}: ts_ns dtype must be int64, got {timestamps_series.dtype}")
+
+    timestamps = timestamps_series.to_numpy(dtype=np.int64)
     if len(timestamps) > 1:
         diffs = np.diff(timestamps)
         if not np.all(diffs >= 0):
             errors.append(f"Run {run_id}: ts_ns not monotonic non-decreasing")
         if np.any(diffs == 0):
             warnings.append(f"Run {run_id}: duplicate timestamps detected")
+    if len(timestamps) > 0:
+        return (int(timestamps[0]), int(timestamps[-1]), int(len(timestamps)))
+    return None
 
-    data_columns = {str(column) for column in frame.columns if column != "ts_ns"}
-    for column in data_columns:
-        if pd.api.types.is_string_dtype(frame[column]) or pd.api.types.is_object_dtype(
-            frame[column]
-        ):
-            errors.append(
-                f"Run {run_id}: column {column} is non-numeric dtype {frame[column].dtype}"
-            )
+
+def _validate_run_schema_columns(
+    run_id: str,
+    column_types: dict[str, pa.DataType],
+    schema_tags: set[str],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    data_columns = {str(column) for column in column_types if column != "ts_ns"}
+    for column in sorted(data_columns):
+        column_type = column_types[column]
+        if not _is_numeric_arrow_type(column_type):
+            errors.append(f"Run {run_id}: column {column} is non-numeric dtype {column_type}")
 
     if schema_tags:
         missing_from_schema = sorted(data_columns - schema_tags)
@@ -146,6 +179,15 @@ def _validate_run_frame(
             )
         if missing_from_run:
             warnings.append(f"Run {run_id}: schema tags missing from run: {missing_from_run[:10]}")
+
+
+def _is_numeric_arrow_type(value: pa.DataType) -> bool:
+    return (
+        pa.types.is_boolean(value)
+        or pa.types.is_integer(value)
+        or pa.types.is_floating(value)
+        or pa.types.is_decimal(value)
+    )
 
 
 def _validate_events(

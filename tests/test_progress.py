@@ -88,8 +88,28 @@ def test_thesis_verification_profile_contains_expected_detector_mix(tmp_path: Pa
     detector_names = [detector.name for detector in config.benchmark.detectors]
 
     assert config.name == "thesis-verification"
-    assert detector_names == ["forecast-ridge", "forecast-lstm"]
+    assert detector_names == ["forecast-ridge", "forecast-lstm", "dra", "interfusion", "drcad"]
     assert config.benchmark.protocols == ["naive", "all_in_one", "zero_shot"]
+    assert [experiment.experiment_id for experiment in config.benchmark.experiments()] == [
+        "TEP__forecast-ridge__naive",
+        "TEP__forecast-ridge__all_in_one",
+        "TEP__forecast-ridge__zero_shot",
+        "SWaT__forecast-ridge__naive",
+        "SWaT__forecast-ridge__all_in_one",
+        "SWaT__forecast-ridge__zero_shot",
+        "SWaT__forecast-lstm-tiny__naive",
+        "SWaT__dra-tiny__naive",
+        "SWaT__interfusion-tiny__naive",
+        "SWaT__drcad-tiny__naive",
+        "HAI__forecast-ridge__naive",
+        "HAI__forecast-ridge__all_in_one",
+        "HAI__forecast-ridge__zero_shot",
+        "HAI__forecast-lstm-tiny__naive",
+        "HAI-CPPS__forecast-ridge__naive",
+        "HAI-CPPS__forecast-ridge__all_in_one",
+        "HAI-CPPS__forecast-ridge__zero_shot",
+        "HAI-CPPS__forecast-lstm-tiny__naive",
+    ]
 
 
 def test_default_config_written_under_config_points_to_project_paths(tmp_path: Path):

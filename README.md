@@ -118,6 +118,18 @@ For full assistant replay thesis runs, `llama.cpp` is the recommended local repr
 backend through its OpenAI-compatible server. Cloud providers are configured via
 environment-variable names only; secrets are never written to config files.
 
+Docker runs can use a GPU-aware route when NVIDIA Docker passthrough is
+available:
+
+```powershell
+docker compose build itse
+.\scripts\Start-LlamaCppServer.ps1 -ModelPath out\local-setup\models\<Qwen2.5-7B-Instruct-Q4_K_M.gguf> -Gpu auto
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse system gpu-check --device auto --json
+```
+
+`-Gpu auto` falls back to CPU when Docker CUDA is unavailable. Use `-Gpu on`
+when a run should require GPU support.
+
 Run a clean-repo audit before sharing or reviewing the architecture:
 
 ```powershell

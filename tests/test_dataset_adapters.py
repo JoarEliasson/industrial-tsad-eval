@@ -107,6 +107,38 @@ def test_swat_real_slash_timestamp_format_prepares(tmp_path: Path):
     assert result.event_count == 1
 
 
+def test_swat_ignores_merged_file_when_normal_and_attack_files_exist(tmp_path: Path):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    normal = pd.DataFrame(
+        {
+            "Timestamp": pd.date_range("2026-01-01", periods=4, freq="s"),
+            "FIT101": [1.0, 1.1, 1.2, 1.3],
+            "Normal/Attack": ["Normal", "Normal", "Normal", "Normal"],
+        }
+    )
+    attack = pd.DataFrame(
+        {
+            "Timestamp": pd.date_range("2026-01-02", periods=4, freq="s"),
+            "FIT101": [1.0, 5.0, 5.1, 1.2],
+            "Normal/Attack": ["Normal", "Attack", "Attack", "Normal"],
+        }
+    )
+    normal.to_csv(raw / "normal.csv", index=False)
+    attack.to_csv(raw / "attack.csv", index=False)
+    pd.concat([normal, attack], ignore_index=True).to_csv(raw / "merged.csv", index=False)
+
+    result = PrepareDataset(
+        adapter_registry=default_dataset_adapter_registry(),
+        dataset="swat",
+        raw=raw,
+        out=tmp_path / "prepared",
+    ).run()
+
+    assert result.run_count == 2
+    assert result.event_count == 1
+
+
 def test_hai_label_files_are_paired_not_written_as_runs(tmp_path: Path):
     raw = tmp_path / "raw" / "hai-23.05"
     raw.mkdir(parents=True)
@@ -147,15 +179,31 @@ def test_hai_cpps_aligns_scenario_feature_schema(tmp_path: Path):
     pd.DataFrame(
         {
             "Timestamp": pd.date_range("2026-01-01", periods=8, freq="s"),
+            "SharedState": np.ones(8),
             "SensorA": np.arange(8),
         }
-    ).to_csv(normal / "continuous.csv", index=False)
+    ).to_csv(normal / "normal_continuous_s.csv", index=False)
     pd.DataFrame(
         {
             "Timestamp": pd.date_range("2026-01-01", periods=8, freq="s"),
+            "SharedState": np.ones(8),
+            "DiscreteA": np.arange(8) % 2,
+        }
+    ).to_csv(normal / "normal_discrete_s.csv", index=False)
+    pd.DataFrame(
+        {
+            "Timestamp": pd.date_range("2026-01-01", periods=8, freq="s"),
+            "SharedState": np.ones(8),
             "SensorB": np.arange(8),
         }
-    ).to_csv(attack / "continuous.csv", index=False)
+    ).to_csv(attack / "fault_continuous_s.csv", index=False)
+    pd.DataFrame(
+        {
+            "Timestamp": pd.date_range("2026-01-01", periods=8, freq="s"),
+            "SharedState": np.ones(8),
+            "DiscreteB": np.arange(8) % 2,
+        }
+    ).to_csv(attack / "fault_discrete_s.csv", index=False)
     (attack / "sim_setup.json").write_text('{"attack_start": 2, "attack_duration": 2}')
 
     result = PrepareDataset(
@@ -166,6 +214,7 @@ def test_hai_cpps_aligns_scenario_feature_schema(tmp_path: Path):
     ).run()
     report = ValidatePreparedDataset(result.prepared_path).run()
 
+    assert result.run_count == 2
     assert report.ok
     assert not any("schema tags missing from run" in warning for warning in report.warnings)
 

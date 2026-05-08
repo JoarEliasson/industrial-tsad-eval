@@ -50,13 +50,10 @@ class HAICPPSDatasetAdapterPlugin:
         runs: list[PreparedRun] = []
         events: list[dict[str, Any]] = []
 
-        for index, table_path in enumerate(discover_table_files(raw), start=1):
-            if table_path.name.lower() == "sim_setup.json":
-                continue
-            table = read_table(table_path)
-            scenario_dir = table_path.parent
+        for index, (scenario_dir, table_paths) in enumerate(_scenario_table_groups(raw), start=1):
+            table = _merge_scenario_tables(table_paths)
             setup = _load_setup(scenario_dir / "sim_setup.json")
-            split = _split_from_context(table_path, setup)
+            split = _split_from_context(scenario_dir, setup)
             run_id = f"hai-cpps/{split}/{scenario_dir.name}_{index:03d}"
             exclude = _setup_label_columns(table)
             prepared_frame, _enum_maps, period_ns = build_prepared_frame(
@@ -71,11 +68,11 @@ class HAICPPSDatasetAdapterPlugin:
                     run_id=run_id,
                     frame=prepared_frame,
                     split=split,
-                    source=str(table_path),
+                    source=";".join(str(path) for path in table_paths),
                     period_ns=period_ns,
                 )
             )
-            events.extend(_events_from_setup(run_id, prepared_frame, setup, table_path))
+            events.extend(_events_from_setup(run_id, prepared_frame, setup, scenario_dir))
 
         runs = _align_feature_schema(runs)
         return write_prepared_dataset(
@@ -93,6 +90,44 @@ def _load_setup(path: Path) -> dict[str, Any]:
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
     return payload if isinstance(payload, dict) else {}
+
+
+def _scenario_table_groups(raw: Path) -> list[tuple[Path, list[Path]]]:
+    grouped: dict[Path, list[Path]] = {}
+    for table_path in discover_table_files(raw):
+        grouped.setdefault(table_path.parent, []).append(table_path)
+    return [
+        (scenario_dir, sorted(paths, key=_scenario_table_sort_key))
+        for scenario_dir, paths in sorted(grouped.items(), key=lambda item: str(item[0]))
+    ]
+
+
+def _scenario_table_sort_key(path: Path) -> tuple[int, str]:
+    name = path.name.lower()
+    if "continuous" in name:
+        return (0, name)
+    if "discrete" in name:
+        return (1, name)
+    return (2, name)
+
+
+def _merge_scenario_tables(table_paths: list[Path]) -> pd.DataFrame:
+    merged: pd.DataFrame | None = None
+    for table_path in table_paths:
+        table = read_table(table_path).reset_index(drop=True)
+        if merged is None:
+            merged = table
+            continue
+        row_count = min(len(merged), len(table))
+        merged = merged.iloc[:row_count].reset_index(drop=True)
+        table = table.iloc[:row_count].reset_index(drop=True)
+        existing_columns = {str(column) for column in merged.columns}
+        new_columns = [column for column in table.columns if str(column) not in existing_columns]
+        if new_columns:
+            merged = pd.concat([merged, table[new_columns]], axis=1)
+    if merged is None:
+        raise ValueError("HAI-CPPS scenario did not contain any readable tables.")
+    return merged
 
 
 def _split_from_context(path: Path, setup: dict[str, Any]) -> str:
@@ -144,9 +179,9 @@ def _events_from_setup(
     run_id: str,
     frame: pd.DataFrame,
     setup: dict[str, Any],
-    table_path: Path,
+    scenario_dir: Path,
 ) -> list[dict[str, Any]]:
-    if len(frame) == 0 or _split_from_context(table_path, setup) != "test":
+    if len(frame) == 0 or _split_from_context(scenario_dir, setup) != "test":
         return []
 
     start_index = _setup_int(
@@ -159,13 +194,13 @@ def _events_from_setup(
     end_index = int(np.clip(start_index + duration, start_index, len(frame) - 1))
     return [
         {
-            "event_id": f"{table_path.parent.name}_event_001",
+            "event_id": f"{scenario_dir.name}_event_001",
             "run_id": run_id,
             "start_ts_ns": int(frame["ts_ns"].iloc[start_index]),
             "end_ts_ns": int(frame["ts_ns"].iloc[end_index]),
             "event_type": "attack",
             "metadata": {
-                "scenario": table_path.parent.name,
+                "scenario": scenario_dir.name,
                 "setup": setup,
                 "onset_clamped": start_index,
             },

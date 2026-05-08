@@ -56,7 +56,7 @@ class SWaTDatasetAdapterPlugin:
         runs: list[PreparedRun] = []
         events: list[dict[str, Any]] = []
 
-        for index, table_path in enumerate(discover_table_files(raw), start=1):
+        for index, table_path in enumerate(_selected_swat_files(raw), start=1):
             table = pd.read_parquet(table_path) if table_path.suffix.lower() == ".parquet" else None
             if table is None:
                 from industrial_tsad_eval.infrastructure.data_utils import read_table
@@ -103,6 +103,17 @@ def _split_from_name(path: Path) -> str:
     if any(token in lowered for token in ("attack", "anomaly", "test")):
         return "test"
     return "train"
+
+
+def _selected_swat_files(raw: Path) -> list[Path]:
+    files = discover_table_files(raw)
+    has_normal = any("normal" in path.name.lower() for path in files)
+    has_attack = any(
+        any(token in path.name.lower() for token in ("attack", "anomaly", "test")) for path in files
+    )
+    if has_normal and has_attack:
+        return [path for path in files if "merged" not in path.name.lower()]
+    return files
 
 
 def _sort_by_timestamp(table: pd.DataFrame) -> pd.DataFrame:

@@ -22,7 +22,7 @@ python -m pip install "llama-cpp-python[server]" huggingface_hub
 Start llama.cpp/OpenAI-compatible serving in a separate terminal:
 
 ```powershell
-python -m llama_cpp.server --model out\local-setup\models\<Qwen2.5-7B-Instruct-Q4_K_M.gguf> --host 127.0.0.1 --port 8080
+.\scripts\Start-LlamaCppServer.ps1 -ModelPath out\local-setup\models\<Qwen2.5-7B-Instruct-Q4_K_M.gguf> -Gpu auto
 ```
 
 Success means `itse assistant providers` lists `llama-cpp` and
@@ -38,7 +38,23 @@ docker compose build itse
 docker compose run --rm itse itse --help
 ```
 
-The Docker route expects llama.cpp to run on the host. Use
+For GPU-aware toolkit commands, use the wrapper after the image has been built:
+
+```powershell
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse system gpu-check --device auto --json
+```
+
+`-Gpu auto` uses `docker-compose.gpu.yml` only when Docker CUDA is available.
+Use `-Gpu on` if the run should fail rather than fall back to CPU.
+
+The Docker route expects llama.cpp to run on the host. Start it with automatic
+GPU offload when available:
+
+```powershell
+.\scripts\Start-LlamaCppServer.ps1 -ModelPath out\local-setup\models\<Qwen2.5-7B-Instruct-Q4_K_M.gguf> -Gpu auto
+```
+
+Use
 `http://host.docker.internal:8080/v1` in Docker-specific assistant provider
 configs:
 
@@ -54,7 +70,8 @@ max_tokens = 700
 seed = 1337
 ```
 
-See `docs/docker.md` for volume mounts, resource caps, and smoke commands.
+See `docs/docker.md` for volume mounts, resource caps, GPU routing, and smoke
+commands.
 
 ## 2. Data Preparation
 
@@ -105,7 +122,7 @@ docker compose run --rm itse python -m pytest
 docker compose run --rm itse python -m ruff check .
 docker compose run --rm itse python -m ruff format --check .
 docker compose run --rm itse python -m mypy src
-docker compose run --rm itse itse system report --out out\reproduction\machine_env.json --device auto
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse system report --out out\reproduction\machine_env.json --device auto
 ```
 
 Record the memory and thread budget before long runs:
@@ -130,17 +147,18 @@ itse reproduce summarize --run out\reproduction\thesis-verification-YYYYMMDD
 Docker equivalent:
 
 ```powershell
-docker compose run --rm itse itse reproduce init-config --out config\thesis_verification.docker.toml --profile thesis-verification
-docker compose run --rm itse itse reproduce plan --config config\thesis_verification.docker.toml
-docker compose run --rm itse itse reproduce preflight --config config\thesis_verification.docker.toml --out out\preflight\thesis-verification-docker
-docker compose run --rm itse itse reproduce run --config config\thesis_verification.docker.toml --out out\reproduction --run-id thesis-verification-docker-YYYYMMDD
-docker compose run --rm itse itse reproduce status --run out\reproduction\thesis-verification-docker-YYYYMMDD
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce init-config --out config\thesis_verification.docker.toml --profile thesis-verification
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce plan --config config\thesis_verification.docker.toml
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce preflight --config config\thesis_verification.docker.toml --out out\preflight\thesis-verification-docker
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce run --config config\thesis_verification.docker.toml --out out\reproduction --run-id thesis-verification-docker-YYYYMMDD
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce status --run out\reproduction\thesis-verification-docker-YYYYMMDD
 ```
 
 The verification profile runs all four prepared datasets and all three
-protocols with `forecast-ridge`, plus a tiny `forecast-lstm` torch check over
-the same matrix. It is intended to validate the workflow shape, not to produce
-research-scale detector budgets.
+protocols with `forecast-ridge`, plus bounded torch checks:
+`forecast-lstm` on SWaT, HAI, and HAI-CPPS `naive`, and DRA, InterFusion, and
+DRCAD on SWaT `naive`. It is intended to validate the workflow shape, not to
+produce research-scale detector budgets.
 
 ## 5. Larger Thesis-Style Run
 
@@ -158,11 +176,11 @@ itse reproduce summarize --run out\reproduction\thesis-full-YYYYMMDD
 Docker equivalent:
 
 ```powershell
-docker compose run --rm itse itse reproduce init-config --out config\thesis_full.docker.toml --profile thesis-full
-docker compose run --rm itse itse reproduce plan --config config\thesis_full.docker.toml
-docker compose run --rm itse itse reproduce preflight --config config\thesis_full.docker.toml --out out\preflight\thesis-full-docker
-docker compose run --rm itse itse reproduce run --config config\thesis_full.docker.toml --out out\reproduction --run-id thesis-full-docker-YYYYMMDD
-docker compose run --rm itse itse reproduce status --run out\reproduction\thesis-full-docker-YYYYMMDD --watch
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce init-config --out config\thesis_full.docker.toml --profile thesis-full
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce plan --config config\thesis_full.docker.toml
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce preflight --config config\thesis_full.docker.toml --out out\preflight\thesis-full-docker
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce run --config config\thesis_full.docker.toml --out out\reproduction --run-id thesis-full-docker-YYYYMMDD
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce status --run out\reproduction\thesis-full-docker-YYYYMMDD --watch
 ```
 
 `thesis-full` explicitly includes `forecast-ridge`, `forecast-lstm`, `dra`,

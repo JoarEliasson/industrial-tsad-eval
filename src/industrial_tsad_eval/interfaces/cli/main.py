@@ -78,7 +78,7 @@ from industrial_tsad_eval.infrastructure.system import (
     capture_machine_environment,
     detect_system_gpus,
     probe_torch_runtime,
-    recommend_backend_for_gpus,
+    recommend_backend_for_runtime,
 )
 from industrial_tsad_eval.interfaces.cli.progress import cli_progress
 from industrial_tsad_eval.plugins.providers import default_llm_provider_registry
@@ -505,7 +505,7 @@ def system_gpu_check(
         runtime = probe_torch_runtime(device)
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
-    recommended = recommend_backend_for_gpus(gpus)
+    recommended = recommend_backend_for_runtime(gpus, runtime)
     recommended_ready = _backend_ready(recommended, runtime.to_dict())
     payload = {
         "system_gpus": [gpu.to_dict() for gpu in gpus],

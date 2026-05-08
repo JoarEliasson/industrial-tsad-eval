@@ -41,10 +41,21 @@ class BenchmarkDetectorConfig:
     id: str
     name: str
     parameters: dict[str, Any] = field(default_factory=dict)
+    datasets: list[str] | None = None
+    protocols: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible data."""
-        return {"id": self.id, "name": self.name, "parameters": dict(self.parameters)}
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "name": self.name,
+            "parameters": dict(self.parameters),
+        }
+        if self.datasets is not None:
+            payload["datasets"] = list(self.datasets)
+        if self.protocols is not None:
+            payload["protocols"] = list(self.protocols)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -111,6 +122,7 @@ class BenchmarkConfig:
         _ensure_unique("detector", [item.id for item in detectors])
         for protocol in protocols:
             _validate_safe_id(protocol, "protocol")
+        _validate_detector_filters(detectors, datasets, protocols)
         return cls(
             name=name,
             protocols=protocols,
@@ -124,7 +136,12 @@ class BenchmarkConfig:
         experiments: list[BenchmarkExperiment] = []
         for dataset_config in self.datasets:
             for detector_config in self.detectors:
-                for protocol in self.protocols:
+                if detector_config.datasets is not None and dataset_config.id not in set(
+                    detector_config.datasets
+                ):
+                    continue
+                protocols = detector_config.protocols or self.protocols
+                for protocol in protocols:
                     experiments.append(
                         BenchmarkExperiment(
                             experiment_id=experiment_id(
@@ -200,8 +217,18 @@ def _detector_configs(payload: object) -> list[BenchmarkDetectorConfig]:
         parameters = item.get("parameters", {})
         if not isinstance(parameters, dict):
             raise BenchmarkConfigError(f"detectors[{index}].parameters must be an object.")
+        datasets = _optional_string_list(item, "datasets", f"detectors[{index}].datasets")
+        protocols = _optional_string_list(item, "protocols", f"detectors[{index}].protocols")
         _validate_safe_id(item_id, f"detectors[{index}].id")
-        detectors.append(BenchmarkDetectorConfig(id=item_id, name=name, parameters=parameters))
+        detectors.append(
+            BenchmarkDetectorConfig(
+                id=item_id,
+                name=name,
+                parameters=parameters,
+                datasets=datasets,
+                protocols=protocols,
+            )
+        )
     return detectors
 
 
@@ -229,6 +256,38 @@ def _required_string_list(payload: dict[str, Any], key: str, label: str) -> list
             raise BenchmarkConfigError(f"{label}[{index}] must be a non-empty string.")
         output.append(item.strip())
     return output
+
+
+def _optional_string_list(
+    payload: dict[str, Any],
+    key: str,
+    label: str,
+) -> list[str] | None:
+    if key not in payload:
+        return None
+    return _required_string_list(payload, key, label)
+
+
+def _validate_detector_filters(
+    detectors: list[BenchmarkDetectorConfig],
+    datasets: list[BenchmarkDatasetConfig],
+    protocols: list[str],
+) -> None:
+    dataset_ids = {dataset.id for dataset in datasets}
+    protocol_ids = set(protocols)
+    for detector in detectors:
+        for dataset_id in detector.datasets or []:
+            _validate_safe_id(dataset_id, f"detectors[{detector.id}].datasets")
+            if dataset_id not in dataset_ids:
+                raise BenchmarkConfigError(
+                    f"Detector {detector.id!r} references unknown dataset {dataset_id!r}."
+                )
+        for protocol in detector.protocols or []:
+            _validate_safe_id(protocol, f"detectors[{detector.id}].protocols")
+            if protocol not in protocol_ids:
+                raise BenchmarkConfigError(
+                    f"Detector {detector.id!r} references unknown protocol {protocol!r}."
+                )
 
 
 def _ensure_unique(label: str, values: list[str]) -> None:

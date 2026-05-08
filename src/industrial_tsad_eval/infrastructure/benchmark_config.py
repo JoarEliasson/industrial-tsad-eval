@@ -77,6 +77,14 @@ def render_benchmark_config_toml(config: BenchmarkConfig) -> str:
                 "[[detectors]]",
                 f'id = "{_toml_string(detector_config.id)}"',
                 f'name = "{_toml_string(detector_config.name)}"',
+            ]
+        )
+        if detector_config.datasets is not None:
+            lines.append(f"datasets = {_string_list(detector_config.datasets)}")
+        if detector_config.protocols is not None:
+            lines.append(f"protocols = {_string_list(detector_config.protocols)}")
+        lines.extend(
+            [
                 f"parameters = {_inline_table(detector_config.parameters)}",
                 "",
             ]
@@ -97,6 +105,12 @@ def _resolve_prepared_paths(config: BenchmarkConfig, base_dir: Path) -> Benchmar
             id=detector_config.id,
             name=detector_config.name,
             parameters=dict(detector_config.parameters),
+            datasets=list(detector_config.datasets)
+            if detector_config.datasets is not None
+            else None,
+            protocols=list(detector_config.protocols)
+            if detector_config.protocols is not None
+            else None,
         )
         for detector_config in config.detectors
     ]
@@ -121,6 +135,10 @@ def _inline_table(payload: dict[str, Any]) -> str:
         return "{}"
     parts = [f"{key} = {_toml_value(value)}" for key, value in sorted(payload.items())]
     return "{ " + ", ".join(parts) + " }"
+
+
+def _string_list(values: list[str]) -> str:
+    return "[" + ", ".join(f'"{_toml_string(value)}"' for value in values) + "]"
 
 
 def _toml_value(value: Any) -> str:

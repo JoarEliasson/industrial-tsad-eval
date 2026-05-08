@@ -76,6 +76,67 @@ def test_benchmark_matrix_expansion_has_stable_ids():
     ]
 
 
+def test_benchmark_detector_filters_limit_matrix():
+    config = BenchmarkConfig(
+        name="filtered",
+        protocols=["naive", "all_in_one", "zero_shot"],
+        datasets=[
+            BenchmarkDatasetConfig(id="TEP", prepared="prepared/TEP"),
+            BenchmarkDatasetConfig(id="SWaT", prepared="prepared/SWaT"),
+            BenchmarkDatasetConfig(id="HAI", prepared="prepared/HAI"),
+        ],
+        detectors=[
+            BenchmarkDetectorConfig(id="ridge", name="forecast-ridge"),
+            BenchmarkDetectorConfig(
+                id="lstm-tiny",
+                name="forecast-lstm",
+                datasets=["SWaT", "HAI"],
+                protocols=["naive"],
+            ),
+            BenchmarkDetectorConfig(
+                id="dra-tiny",
+                name="dra",
+                datasets=["SWaT"],
+                protocols=["naive"],
+            ),
+        ],
+    )
+
+    experiment_ids = [experiment.experiment_id for experiment in config.experiments()]
+
+    assert experiment_ids == [
+        "TEP__ridge__naive",
+        "TEP__ridge__all_in_one",
+        "TEP__ridge__zero_shot",
+        "SWaT__ridge__naive",
+        "SWaT__ridge__all_in_one",
+        "SWaT__ridge__zero_shot",
+        "SWaT__lstm-tiny__naive",
+        "SWaT__dra-tiny__naive",
+        "HAI__ridge__naive",
+        "HAI__ridge__all_in_one",
+        "HAI__ridge__zero_shot",
+        "HAI__lstm-tiny__naive",
+    ]
+
+
+def test_benchmark_config_rejects_unknown_detector_filter_target():
+    with pytest.raises(BenchmarkConfigError, match="unknown dataset"):
+        BenchmarkConfig.from_mapping(
+            {
+                "benchmark": {"name": "bad", "protocols": ["naive"]},
+                "datasets": [{"id": "opcua", "prepared": "prepared/OPCUA_SYNTH"}],
+                "detectors": [
+                    {
+                        "id": "forecast",
+                        "name": "forecast-ridge",
+                        "datasets": ["missing"],
+                    }
+                ],
+            }
+        )
+
+
 def test_summary_row_extracts_public_metric_columns():
     row = summary_row(
         BenchmarkExperimentResult(

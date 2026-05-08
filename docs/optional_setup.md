@@ -45,7 +45,7 @@ server with Qwen2.5-7B-Instruct GGUF Q4_K_M:
 
 ```powershell
 python -m pip install "llama-cpp-python[server]" huggingface_hub
-llama-server -m C:\path\to\model.gguf --host 127.0.0.1 --port 8080
+.\scripts\Start-LlamaCppServer.ps1 -ModelPath C:\path\to\model.gguf -Gpu auto
 itse assistant providers
 itse assistant preflight --config config/thesis_full.toml
 ```
@@ -56,7 +56,21 @@ and referee JSON generation works through `/v1/chat/completions`.
 
 For Docker runs, keep llama.cpp on the host and set provider configs to
 `http://host.docker.internal:8080/v1`. See `docs/docker.md` for the 16 GB
-container memory route and volume layout.
+container memory route, GPU-aware Docker wrapper, and volume layout.
+
+For NVIDIA GPU offload, install or build a CUDA-enabled `llama-cpp-python`
+wheel before starting the server. A typical local rebuild is:
+
+```powershell
+$env:CMAKE_ARGS = "-DGGML_CUDA=on"
+$env:FORCE_CMAKE = "1"
+python -m pip install --force-reinstall --no-cache-dir "llama-cpp-python[server]"
+.\scripts\Start-LlamaCppServer.ps1 -ModelPath C:\path\to\model.gguf -Gpu auto
+```
+
+The helper adds `--n_gpu_layers -1` when `nvidia-smi` is available. Use
+`-Gpu off` for CPU-only serving or `-Gpu on` when the run should require GPU
+offload.
 
 ## OpenAI-Compatible And Cloud Providers
 

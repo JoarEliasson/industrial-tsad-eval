@@ -13,7 +13,7 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluateConfig,
 )
 from industrial_tsad_eval.domain.errors import PreflightError
-from industrial_tsad_eval.domain.system import PreflightCheck, SystemGpu
+from industrial_tsad_eval.domain.system import PreflightCheck, SystemGpu, TorchRuntimeStatus
 from industrial_tsad_eval.infrastructure.profiling import (
     StageMonitor,
     percentile,
@@ -25,6 +25,7 @@ from industrial_tsad_eval.infrastructure.system import (
     normalize_device_request,
     probe_torch_runtime,
     recommend_backend_for_gpus,
+    recommend_backend_for_runtime,
 )
 from industrial_tsad_eval.plugins.registry import default_detector_registry
 
@@ -39,6 +40,22 @@ def test_gpu_classification_and_backend_recommendation():
     assert classify_gpu_name("Intel Arc Graphics") == "intel"
     assert classify_gpu_name("AMD Radeon") == "amd"
     assert recommend_backend_for_gpus(gpus) == "cuda"
+
+
+def test_backend_recommendation_uses_ready_torch_runtime_when_gpu_probe_is_sparse():
+    runtime = TorchRuntimeStatus(
+        requested_device="auto",
+        resolved_device="cuda",
+        ready=True,
+        torch_available=True,
+        torch_version="test",
+        torch_import_error=None,
+        cuda_available=True,
+        xpu_available=False,
+        device_name="NVIDIA Test GPU",
+    )
+
+    assert recommend_backend_for_runtime([], runtime) == "cuda"
 
 
 def test_device_request_and_torch_missing_runtime(monkeypatch: pytest.MonkeyPatch):

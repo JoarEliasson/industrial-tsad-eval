@@ -105,7 +105,30 @@ parameters = { window = 32, stride = 4, lags = 1, alpha = 1.0, standardize = tru
 [[detectors]]
 id = "forecast-lstm-tiny"
 name = "forecast-lstm"
+datasets = ["SWaT", "HAI", "HAI-CPPS"]
+protocols = ["naive"]
 parameters = { window = 32, max_train_windows = 256, epochs = 1, device = "auto" }
+
+[[detectors]]
+id = "dra-tiny"
+name = "dra"
+datasets = ["SWaT"]
+protocols = ["naive"]
+parameters = { window = 32, max_train_windows = 128, epochs = 1, batch_size = 16, device = "auto" }
+
+[[detectors]]
+id = "interfusion-tiny"
+name = "interfusion"
+datasets = ["SWaT"]
+protocols = ["naive"]
+parameters = { window = 32, max_train_windows = 128, epochs = 1, batch_size = 16, device = "auto" }
+
+[[detectors]]
+id = "drcad-tiny"
+name = "drcad"
+datasets = ["SWaT"]
+protocols = ["naive"]
+parameters = { window = 32, patch_size = 8, max_train_windows = 128, epochs = 1, device = "auto" }
 
 [assistant]
 suite_id = "thesis-verification-assistant"
@@ -333,6 +356,8 @@ def _resolve_benchmark_paths(config: BenchmarkConfig, base_dir: Path) -> Benchma
                 id=detector.id,
                 name=detector.name,
                 parameters=dict(detector.parameters),
+                datasets=list(detector.datasets) if detector.datasets is not None else None,
+                protocols=list(detector.protocols) if detector.protocols is not None else None,
             )
             for detector in config.detectors
         ],
@@ -414,6 +439,14 @@ def _benchmark_lines(config: BenchmarkConfig) -> list[str]:
                 "[[detectors]]",
                 f'id = "{_toml_string(detector.id)}"',
                 f'name = "{_toml_string(detector.name)}"',
+            ]
+        )
+        if detector.datasets is not None:
+            lines.append(f"datasets = {_string_list(detector.datasets)}")
+        if detector.protocols is not None:
+            lines.append(f"protocols = {_string_list(detector.protocols)}")
+        lines.extend(
+            [
                 f"parameters = {_inline_table(detector.parameters)}",
                 "",
             ]
@@ -464,6 +497,10 @@ def _inline_table(payload: dict[str, Any]) -> str:
         return "{}"
     parts = [f"{key} = {_toml_value(value)}" for key, value in sorted(payload.items())]
     return "{ " + ", ".join(parts) + " }"
+
+
+def _string_list(values: list[str]) -> str:
+    return "[" + ", ".join(f'"{_toml_string(value)}"' for value in values) + "]"
 
 
 def _toml_value(value: Any) -> str:
