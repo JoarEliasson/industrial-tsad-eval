@@ -476,6 +476,10 @@ def test_thesis_full_profile_matches_current_draft_parameters(tmp_path: Path):
     assert experiments["SWaT__dra__all_in_one"].detector.parameters["score_stride"] == 1
     assert experiments["SWaT__interfusion__naive"].detector.parameters["latent_dim"] == 3
     assert experiments["SWaT__interfusion__naive"].detector.parameters["kl_warmup"] == 10
+    assert (
+        experiments["SWaT__interfusion__naive"].detector.parameters["evidence_explanation_source"]
+        == "native"
+    )
     assert experiments["HAI-CPPS__drcad__zero_shot"].detector.parameters["patch_size"] == 5
     assert experiments["HAI-CPPS__drcad__zero_shot"].detector.parameters["lr"] == 0.0001
 
@@ -492,12 +496,22 @@ def test_thesis_full_profile_matches_current_draft_scoring_policy(tmp_path: Path
 
     assert default_policy.merge_gap_s == 10.0
     assert default_policy.grace_s == 5.0
+    assert default_policy.compute == [
+        "event",
+        "delay",
+        "far",
+        "point",
+        "point_adjusted",
+        "affiliation",
+    ]
     assert tep_policy.merge_gap_mode == "auto_period"
     assert tep_policy.merge_gap_skipped_samples == 1
     assert tep_policy.merge_gap_jitter_ratio == 0.1
     assert hai_policy.merge_gap_s == 30.0
     assert hai_policy.grace_s == 120.0
+    assert hai_policy.compute == default_policy.compute
     assert cpps_policy.grace_s == 6.0
+    assert cpps_policy.compute == default_policy.compute
 
 
 def test_assistant_cli_commands(tmp_path: Path, opcua_prepared: Path):

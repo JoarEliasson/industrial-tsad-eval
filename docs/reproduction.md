@@ -28,6 +28,11 @@ The verification and full profiles expect local Prepared Format roots for TEP,
 SWaT, HAI, and HAI_CPPS. Raw data and credentials are never vendored. See
 `docs/thesis_runbook.md` for the recommended manual run order.
 
+`thesis-verification` keeps torch checks intentionally small. `thesis-full`
+uses the thesis-aligned neural detector settings and requires native
+explanation artifacts for DRA, InterFusion, and DRCAD while keeping Forecast
+Ridge on the robust baseline.
+
 ## Stages
 
 `RunThesisReproduction` executes:
@@ -69,6 +74,16 @@ itse reproduce summarize --run out/reproduction/smoke
     detection_summary.csv
     xai_summary.csv
     assistant_summary.csv
+    detection_tables.csv
+    explanation_results.csv
+    explanation_results_split_summary.csv
+    assistant_faithfulness_logs.csv
+    profiling_logs.csv
+    hyperparameters.toml
+    scoring_config.json
+    scoring_config.per_dataset/
+    planner_prompt.txt
+    referee_prompt.txt
     reproducibility_matrix.json
     thesis_crosswalk.md
 ```

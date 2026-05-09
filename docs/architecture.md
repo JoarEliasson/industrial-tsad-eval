@@ -82,8 +82,11 @@ evaluation matches. It writes Evidence Bundle v1 through a repository adapter.
 XAI evaluation then consumes those bundles plus a GT tag map to compute
 HitRate@K, Recall@K, masking proxy drops, and local stability.
 
-Detector-native explainers are intentionally outside this slice. The current
-implementation is deterministic and detector-agnostic.
+Detector-native explainers are optional detector capabilities. Score runs write
+native explanation parquet files beside Score Contract v1 outputs when a fitted
+detector implements the explainer port. Evidence generation can require native
+explanations, use them automatically, or fall back to the deterministic robust
+baseline for detector families such as Forecast Ridge.
 
 ## Operator Card Slice
 

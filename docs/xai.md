@@ -18,8 +18,9 @@ itse xai eval --prepared examples/generated/OPCUA_SYNTH --evidence out/evidence 
 - Stability: adjacent Jaccard overlap of local top-variable rankings.
 
 The masking scorer is built in and safe. The toolkit does not execute arbitrary
-scorer scripts. Detector-native explainers can be added later behind a typed
-plugin seam.
+scorer scripts. When evidence comes from native explainers, XAI metrics evaluate
+those native rankings; masking remains the deterministic robust surrogate used
+to make score-drop comparisons reproducible across detector families.
 
 ## Layout
 
@@ -30,4 +31,3 @@ plugin seam.
   summary.csv
   skipped.json
 ```
-

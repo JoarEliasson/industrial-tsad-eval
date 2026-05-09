@@ -31,6 +31,7 @@ class TorchTrainingConfig:
     device: str = "auto"
     standardize: bool = True
     score_batch_size: int = 512
+    explanation_top_k: int = 10
 
     @classmethod
     def from_parameters(cls, parameters: dict[str, Any]) -> TorchTrainingConfig:
@@ -49,6 +50,9 @@ class TorchTrainingConfig:
             device=str(parameters.get("device", cls.device)),
             standardize=_bool_parameter(parameters, "standardize", cls.standardize),
             score_batch_size=_int_parameter(parameters, "score_batch_size", cls.score_batch_size),
+            explanation_top_k=_int_parameter(
+                parameters, "explanation_top_k", cls.explanation_top_k
+            ),
         )
         config.validate()
         return config
@@ -71,6 +75,8 @@ class TorchTrainingConfig:
             raise ValueError("lr must be greater than 0.")
         if self.score_batch_size <= 0:
             raise ValueError("score_batch_size must be greater than 0.")
+        if self.explanation_top_k <= 0:
+            raise ValueError("explanation_top_k must be greater than 0.")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible metadata."""
@@ -86,6 +92,7 @@ class TorchTrainingConfig:
             "device": self.device,
             "standardize": self.standardize,
             "score_batch_size": self.score_batch_size,
+            "explanation_top_k": self.explanation_top_k,
         }
 
 

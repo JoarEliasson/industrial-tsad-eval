@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.evidence import (
     BuildGroundTruthTagMap,
@@ -13,6 +15,7 @@ from industrial_tsad_eval.application.evidence import (
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
 from industrial_tsad_eval.domain.evidence import EvidenceBundle, EvidenceVariable
+from industrial_tsad_eval.infrastructure.explanation_repository import LocalExplanationRepository
 from industrial_tsad_eval.plugins.registry import default_detector_registry
 
 
@@ -112,6 +115,68 @@ def test_operational_evidence_handles_matched_and_unmatched_predictions(
     assert result.metrics["bundle_count"] == 2
     assert result.metrics["valid_bundle_count"] == 1
     assert result.skipped["missing_gt_entry"] == 1
+
+
+def test_native_explanation_artifacts_drive_evidence_generation(
+    opcua_prepared: Path,
+    tmp_path: Path,
+):
+    scores, _eval_dir = _score_and_eval(opcua_prepared, tmp_path)
+    event = json.loads(
+        (opcua_prepared / "events" / "events.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    first_tag = json.loads((opcua_prepared / "meta" / "schema.json").read_text(encoding="utf-8"))[
+        "tags"
+    ][0]["browse_path"]
+    repository = LocalExplanationRepository(scores / "explanations")
+    repository.write_run_explanations(
+        event["run_id"],
+        pd.DataFrame(
+            [
+                {
+                    "ts_ns": event["start_ts_ns"],
+                    "variable": first_tag,
+                    "importance": 9.0,
+                    "rank": 1,
+                    "method": "unit-native",
+                    "window_start_ts_ns": event["start_ts_ns"],
+                    "window_end_ts_ns": event["end_ts_ns"],
+                }
+            ]
+        ),
+    )
+    repository.write_manifest()
+    evidence_dir = tmp_path / "native_evidence"
+
+    GenerateEvidence(
+        prepared=opcua_prepared,
+        scores=scores,
+        out=evidence_dir,
+        explanation_source="native",
+    ).run()
+    bundle = EvidenceBundle.from_dict(
+        json.loads(next((evidence_dir / "bundles").rglob("evidence.json")).read_text())
+    )
+
+    assert bundle.top_variables[0].variable == first_tag
+    assert bundle.provenance["explanation_source"] == "native"
+    assert bundle.provenance["explainer_method"] == "unit-native"
+
+
+def test_native_explanation_required_fails_when_missing(opcua_prepared: Path, tmp_path: Path):
+    scores, _eval_dir = _score_and_eval(opcua_prepared, tmp_path)
+
+    try:
+        GenerateEvidence(
+            prepared=opcua_prepared,
+            scores=scores,
+            out=tmp_path / "missing_native",
+            explanation_source="native",
+        ).run()
+    except Exception as exc:
+        assert "Native explanation artifacts are required" in str(exc)
+    else:
+        raise AssertionError("Expected missing native explanation artifacts to fail.")
 
 
 def _score_and_eval(prepared: Path, tmp_path: Path) -> tuple[Path, Path]:

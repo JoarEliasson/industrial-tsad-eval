@@ -321,6 +321,7 @@ class RunThesisReproduction:
                 )
                 evidence_dir = run_root / "evidence" / experiment.experiment_id / evidence_source
                 item_id = f"{experiment.experiment_id}:{evidence_source}"
+                detector_config = _detector_config(self.config, experiment.detector)
                 started = time.perf_counter()
                 progress.emit(
                     ProgressEvent(
@@ -341,6 +342,12 @@ class RunThesisReproduction:
                         out=evidence_dir,
                         event_source=evidence_source,
                         protocol=experiment.protocol,
+                        explanation_source=str(
+                            detector_config.parameters.get(
+                                "evidence_explanation_source",
+                                "auto",
+                            )
+                        ),
                     ).run()
                     evidence_dirs[(experiment.experiment_id, evidence_source)] = evidence_dir
                     stages.append(

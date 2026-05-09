@@ -169,6 +169,11 @@ def build_drcad(
                     for _ in range(n_layers)
                 ]
             )
+            self.recon_head = nn.Sequential(
+                nn.Linear(d_model * 2, mlp_dim),
+                nn.GELU(),
+                nn.Linear(mlp_dim, patch_dim),
+            )
 
         def _patches(self, x: Any) -> Any:
             normalized = self.norm(x)
@@ -184,13 +189,26 @@ def build_drcad(
                 n_view = layer(n_view)
             return functional.softmax(s_view, dim=-1), functional.softmax(n_view, dim=-1)
 
+        def reconstruct(self, x: Any) -> Any:
+            patches = self._patches(x)
+            s_view = self.proj_in(patches)
+            n_view = self.proj_pw(patches)
+            for layer in self.in_layers:
+                s_view = layer(s_view)
+            for layer in self.pw_layers:
+                n_view = layer(n_view)
+            decoded = self.recon_head(torch.cat([s_view, n_view], dim=-1))
+            return decoded.reshape_as(x)
+
         def contrastive_loss(self, x: Any) -> Any:
             s_prob, n_prob = self.forward(x)
             s_log = torch.log(s_prob + 1e-10)
             n_log = torch.log(n_prob + 1e-10)
             loss_s = functional.kl_div(s_log, n_prob.detach(), reduction="batchmean")
             loss_n = functional.kl_div(n_log, s_prob.detach(), reduction="batchmean")
-            return loss_s + loss_n
+            reconstruction = self.reconstruct(x)
+            recon = functional.mse_loss(reconstruction, x)
+            return loss_s + loss_n + recon
 
         def deterministic_score(self, x: Any) -> Any:
             s_prob, n_prob = self.forward(x)

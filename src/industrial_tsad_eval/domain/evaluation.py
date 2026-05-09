@@ -181,6 +181,147 @@ def compute_false_alarm_rates(
     }
 
 
+def compute_point_prf_for_scores(
+    score_timestamps_by_run: dict[str, np.ndarray],
+    score_values_by_run: dict[str, np.ndarray],
+    gt_events: list[GTEvent],
+    threshold: float,
+    *,
+    point_adjusted: bool = False,
+) -> dict[str, float]:
+    """Compute point-wise or point-adjusted precision, recall, and F1."""
+    gt_by_run: dict[str, list[GTEvent]] = {}
+    for event in gt_events:
+        gt_by_run.setdefault(event.run_id, []).append(event)
+
+    y_true_parts: list[np.ndarray] = []
+    y_pred_parts: list[np.ndarray] = []
+    for run_id in sorted(score_timestamps_by_run):
+        timestamps = score_timestamps_by_run[run_id]
+        predictions = score_values_by_run[run_id] >= threshold
+        labels = labels_for_events(timestamps, gt_by_run.get(run_id, []))
+        if point_adjusted:
+            predictions = point_adjust_predictions(
+                timestamps,
+                predictions,
+                gt_by_run.get(run_id, []),
+            )
+        y_true_parts.append(labels)
+        y_pred_parts.append(predictions)
+
+    if not y_true_parts:
+        return _binary_prf(np.asarray([], dtype=bool), np.asarray([], dtype=bool))
+    return _binary_prf(np.concatenate(y_true_parts), np.concatenate(y_pred_parts))
+
+
+def labels_for_events(timestamps: np.ndarray, events: list[GTEvent]) -> np.ndarray:
+    """Return boolean point labels for timestamps covered by ground-truth events."""
+    labels = np.zeros(len(timestamps), dtype=bool)
+    for event in events:
+        labels |= (timestamps >= event.start_ts_ns) & (timestamps < event.end_ts_ns)
+    return labels
+
+
+def point_adjust_predictions(
+    timestamps: np.ndarray,
+    predictions: np.ndarray,
+    events: list[GTEvent],
+) -> np.ndarray:
+    """Expand predictions to full ground-truth event ranges when an event is hit."""
+    adjusted = np.asarray(predictions, dtype=bool).copy()
+    for event in events:
+        event_mask = (timestamps >= event.start_ts_ns) & (timestamps < event.end_ts_ns)
+        if np.any(adjusted & event_mask):
+            adjusted[event_mask] = True
+    return adjusted
+
+
+def compute_affiliation_prf(
+    gt_events: list[GTEvent],
+    pred_events: list[PredEvent],
+) -> dict[str, Any]:
+    """Compute overlap-based affiliation-style interval precision, recall, and F1."""
+    precision_values = [
+        _best_overlap_fraction(
+            pred_event.start_ts_ns,
+            pred_event.end_ts_ns,
+            [
+                (event.start_ts_ns, event.end_ts_ns)
+                for event in gt_events
+                if event.run_id == pred_event.run_id
+            ],
+        )
+        for pred_event in pred_events
+    ]
+    recall_values = [
+        _best_overlap_fraction(
+            gt_event.start_ts_ns,
+            gt_event.end_ts_ns,
+            [
+                (event.start_ts_ns, event.end_ts_ns)
+                for event in pred_events
+                if event.run_id == gt_event.run_id
+            ],
+        )
+        for gt_event in gt_events
+    ]
+    precision = (
+        float(np.mean(np.asarray(precision_values, dtype=np.float64)))
+        if precision_values
+        else (1.0 if not gt_events else 0.0)
+    )
+    recall = (
+        float(np.mean(np.asarray(recall_values, dtype=np.float64)))
+        if recall_values
+        else (1.0 if not pred_events else 0.0)
+    )
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+    return {
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "n_gt": float(len(gt_events)),
+        "n_pred": float(len(pred_events)),
+        "definition": "best_overlap_fraction_interval_prf",
+    }
+
+
+def _binary_prf(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    y_true = np.asarray(y_true, dtype=bool)
+    y_pred = np.asarray(y_pred, dtype=bool)
+    tp = int(np.sum(y_true & y_pred))
+    fp = int(np.sum(~y_true & y_pred))
+    fn = int(np.sum(y_true & ~y_pred))
+    precision = tp / (tp + fp) if tp + fp else (1.0 if not np.any(y_true) else 0.0)
+    recall = tp / (tp + fn) if tp + fn else 1.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+    return {
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "tp": float(tp),
+        "fp": float(fp),
+        "fn": float(fn),
+        "support": float(len(y_true)),
+    }
+
+
+def _best_overlap_fraction(
+    start_ts_ns: int,
+    end_ts_ns: int,
+    candidate_intervals: list[tuple[int, int]],
+) -> float:
+    duration = max(int(end_ts_ns) - int(start_ts_ns), 1)
+    best = 0
+    for candidate_start, candidate_end in candidate_intervals:
+        overlap = max(
+            0,
+            min(int(end_ts_ns), int(candidate_end)) - max(int(start_ts_ns), int(candidate_start)),
+        )
+        best = max(best, overlap)
+    return float(best / duration)
+
+
 def _pred_event(
     run_id: str,
     index: int,

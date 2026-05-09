@@ -65,4 +65,13 @@ exits nonzero if any experiment failed.
 
 The CSV summary includes the public columns needed for quick comparison:
 experiment id, dataset, detector, protocol, status, threshold, event PRF,
-detection-delay mean, false alarms per hour, artifact paths, and error.
+detection-delay mean, false alarms per hour, point-adjusted F1,
+affiliation-style interval PRF, artifact paths, and error.
+
+Metric families are written as separate blocks in `eval/metrics.json`. Event
+PRF remains the operational alarm metric. Point and point-adjusted metrics are
+reported for comparison with range/point-adjusted TSAD literature, and
+affiliation-style interval metrics report temporal-overlap behavior separately.
+See Tatbul et al., "Precision and Recall for Time Series", and Huet et al.,
+"Local Evaluation of Time Series Anomaly Detection Algorithms" for the metric
+families that motivate these exports.

@@ -152,6 +152,8 @@ def test_summary_row_extracts_public_metric_columns():
                 "event": {"precision": 0.5, "recall": 1.0, "f1": 2 / 3, "n_gt": 2.0},
                 "delay": {"mean": 10.0},
                 "far": {"false_events_per_hour": 0.25},
+                "point_adjusted": {"f1": 0.75},
+                "affiliation": {"precision": 0.6, "recall": 0.7, "f1": 0.64},
             },
         )
     )
@@ -160,6 +162,8 @@ def test_summary_row_extracts_public_metric_columns():
     assert row["event_recall"] == 1.0
     assert row["delay_mean_ns"] == 10.0
     assert row["far_false_events_per_hour"] == 0.25
+    assert row["point_adjusted_f1"] == 0.75
+    assert row["affiliation_f1"] == 0.64
 
 
 def test_run_benchmark_writes_artifacts_for_opcua_fixture(tmp_path):

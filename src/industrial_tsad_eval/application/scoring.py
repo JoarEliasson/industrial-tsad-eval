@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
+from industrial_tsad_eval.infrastructure.explanation_repository import LocalExplanationRepository
 from industrial_tsad_eval.infrastructure.prepared_repository import LocalPreparedDatasetRepository
 from industrial_tsad_eval.infrastructure.score_repository import LocalScoreRepository
 from industrial_tsad_eval.plugins.registry import DetectorRegistry
@@ -39,6 +42,7 @@ class ScoreRuns:
         self.detector_registry = detector_registry
         self.prepared_repository = LocalPreparedDatasetRepository(prepared)
         self.score_repository = LocalScoreRepository(scores)
+        self.explanation_repository = LocalExplanationRepository(Path(scores) / "explanations")
         self.detector_name = detector_name
         self.protocol = protocol
         self.detector_parameters = dict(detector_parameters or {})
@@ -50,17 +54,34 @@ class ScoreRuns:
         detector.train(self.prepared_repository, self.protocol)
 
         run_ids = _runs_for_protocol(self.prepared_repository.splits(), self.protocol)
+        explanation_run_ids: list[str] = []
         for run_id in run_ids:
             scores = detector.score_run(self.prepared_repository, run_id)
             self.score_repository.write_run_scores(run_id, scores)
+            explain_run = getattr(detector, "explain_run", None)
+            if callable(explain_run):
+                explanations = explain_run(self.prepared_repository, run_id)
+                if isinstance(explanations, pd.DataFrame) and not explanations.empty:
+                    self.explanation_repository.write_run_explanations(run_id, explanations)
+                    explanation_run_ids.append(run_id)
 
         self.score_repository.write_manifest()
+        self.explanation_repository.write_manifest()
+        self.explanation_repository.write_metadata(
+            {
+                "detector": self.detector_name,
+                "dataset": self.prepared_repository.dataset_name,
+                "protocol": self.protocol,
+                "runs_explained": explanation_run_ids,
+            }
+        )
         self.score_repository.write_model_metadata(
             {
                 **detector.metadata(),
                 "dataset": self.prepared_repository.dataset_name,
                 "protocol": self.protocol,
                 "runs_scored": run_ids,
+                "runs_explained": explanation_run_ids,
             }
         )
         return ScoreRunsResult(

@@ -30,17 +30,18 @@ THESIS_ASSISTANT_QUERY_TOML = THESIS_ASSISTANT_QUERY_TEMPLATE.replace("\\", "\\\
 DRA_THESIS_PARAMS = (
     "{ window = 100, train_stride = 10, score_stride = 1, "
     "max_train_windows = 5000, epochs = 30, batch_size = 64, "
-    'seed = 1337, device = "auto" }'
+    'seed = 1337, device = "auto", evidence_explanation_source = "native" }'
 )
 INTERFUSION_THESIS_PARAMS = (
     "{ window = 100, train_stride = 10, score_stride = 1, latent_dim = 3, "
     "kl_warmup = 10, max_train_windows = 5000, epochs = 30, batch_size = 64, "
-    'seed = 1337, device = "auto" }'
+    'seed = 1337, device = "auto", evidence_explanation_source = "native" }'
 )
 DRCAD_THESIS_PARAMS = (
     "{ window = 100, train_stride = 10, score_stride = 1, patch_size = 5, "
     "d_model = 64, n_heads = 4, n_layers = 2, mlp_dim = 128, lr = 0.0001, "
-    'epochs = 10, batch_size = 64, seed = 1337, device = "auto" }'
+    'epochs = 10, batch_size = 64, seed = 1337, device = "auto", '
+    'evidence_explanation_source = "native" }'
 )
 
 THESIS_SMOKE_CONFIG_TOML = """[reproduction]
@@ -196,7 +197,7 @@ threshold_quantile = 0.995
 merge_gap_s = 10.0
 grace_s = 5.0
 threshold_quantile = 0.995
-compute = ["event", "delay", "far"]
+compute = ["event", "delay", "far", "point", "point_adjusted", "affiliation"]
 event_types = ["attack", "fault", "anomaly"]
 
 [benchmark.evaluation.dataset_policies.TEP]

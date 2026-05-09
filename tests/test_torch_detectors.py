@@ -16,6 +16,7 @@ from industrial_tsad_eval.domain.benchmark import (
     BenchmarkDetectorConfig,
 )
 from industrial_tsad_eval.domain.errors import OptionalDependencyError
+from industrial_tsad_eval.infrastructure.explanation_repository import LocalExplanationRepository
 from industrial_tsad_eval.plugins.registry import default_detector_registry
 from industrial_tsad_eval.plugins.torch_common import (
     TorchTrainingConfig,
@@ -120,6 +121,16 @@ def test_torch_detector_scores_validate_and_write_metadata(
     assert metadata["resolved_device"] == "cpu"
     assert metadata["feature_columns"]
     assert metadata["train_window_count"] > 0
+    if detector in {"dra", "interfusion", "drcad"}:
+        explanations = LocalExplanationRepository(scores / "explanations")
+        discovered = explanations.discover()
+        assert set(discovered) == set(result.runs_scored)
+        frame = explanations.read_run_explanations(result.runs_scored[-1])
+        assert {"ts_ns", "variable", "importance", "rank", "method"}.issubset(frame.columns)
+        assert frame["importance"].ge(0.0).all()
+        assert frame["rank"].min() == 1
+    else:
+        assert not (scores / "explanations" / "manifest.json").exists()
 
 
 def test_benchmark_can_run_torch_detector(opcua_prepared: Path, tmp_path: Path):
@@ -160,6 +171,7 @@ def _tiny_torch_parameters() -> dict[str, object]:
         "seed": 123,
         "device": "cpu",
         "standardize": True,
+        "explanation_top_k": 3,
     }
 
 

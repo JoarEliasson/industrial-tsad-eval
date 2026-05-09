@@ -253,6 +253,7 @@ def _stability(bundle: EvidenceBundle, max_k: int) -> float | None:
 
 
 def _base_row(bundle: EvidenceBundle) -> dict[str, Any]:
+    provenance = dict(bundle.provenance)
     return {
         "run_id": bundle.run_id,
         "event_id": bundle.event_id,
@@ -260,6 +261,10 @@ def _base_row(bundle: EvidenceBundle) -> dict[str, Any]:
         "matched_gt_event_id": bundle.matched_gt_event_id,
         "is_matched_pred_event": bundle.is_matched_pred_event,
         "top_variables": "|".join(item.variable for item in bundle.top_variables),
+        "explanation_source": provenance.get("explanation_source"),
+        "explainer_method": provenance.get("explainer_method"),
+        "evidence_generator": provenance.get("generator"),
+        "fallback_from_native": provenance.get("fallback_from_native"),
     }
 
 

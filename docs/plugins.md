@@ -50,22 +50,24 @@ A detector plugin provides:
 
 The detector reads data through a `PreparedDatasetRepository` port and returns
 Score Contract v1 rows as a dataframe. It does not write files directly.
-Detector-native evidence explainers are not part of the detector plugin contract
-yet; Phase 6 evidence generation uses a detector-agnostic robust-deviation
-generator.
+Detectors may also implement the optional explainer port. When present,
+`ScoreRuns` writes native explanation parquet files under
+`scores/explanations/`, and Evidence Bundle generation can consume those
+rankings.
 
 Built-in detectors:
 
 - `forecast-ridge`: scikit-learn ridge next-step forecasting baseline.
 - `forecast-lstm`: optional torch LSTM next-step forecaster.
-- `dra`: optional torch detection-only DRA Model 1 TCN forecaster.
-- `interfusion`: optional torch detection-only HVAE window detector.
-- `drcad`: optional torch detection-only dual-view contrastive detector.
+- `dra`: optional torch TCN forecaster with residual-gradient saliency.
+- `interfusion`: optional torch HVAE detector with MC reconstruction attribution.
+- `drcad`: optional torch dual-view detector with counterfactual reconstruction deltas.
 
 Torch-backed detectors share these parameters:
 
 - `window`, `train_stride`, `score_stride`, `max_train_windows`
 - `epochs`, `batch_size`, `lr`, `seed`, `device`, `standardize`
+- `explanation_top_k` for native explanation artifact size
 
 Install optional torch support with:
 

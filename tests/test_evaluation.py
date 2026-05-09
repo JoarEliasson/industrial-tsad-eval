@@ -8,12 +8,15 @@ from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.domain.evaluation import (
     cluster_anomalies_to_pred_events,
+    compute_affiliation_prf,
     compute_delays,
     compute_event_prf,
     compute_false_alarm_rates,
+    compute_point_prf_for_scores,
     match_pred_to_gt_events,
 )
 from industrial_tsad_eval.domain.events import GTEvent
+from industrial_tsad_eval.domain.policy import EvalPolicy
 from industrial_tsad_eval.plugins.registry import default_detector_registry
 
 
@@ -34,6 +37,31 @@ def test_event_matching_delay_and_far_metrics():
     assert far["false_events_per_hour"] == 1.0
 
 
+def test_point_and_affiliation_metrics_cover_edge_cases():
+    gt = [GTEvent("run", "gt-1", 10, 30, "attack", {})]
+    timestamps = {"run": np.array([0, 10, 20, 30, 40], dtype=np.int64)}
+    values = {"run": np.array([0.1, 0.1, 0.9, 0.1, 0.9], dtype=np.float64)}
+
+    point = compute_point_prf_for_scores(timestamps, values, gt, threshold=0.5)
+    adjusted = compute_point_prf_for_scores(
+        timestamps,
+        values,
+        gt,
+        threshold=0.5,
+        point_adjusted=True,
+    )
+    affiliation = compute_affiliation_prf(
+        gt,
+        cluster_anomalies_to_pred_events("run", np.array([20, 40]), 0, 10, 10),
+    )
+
+    assert point["precision"] == 0.5
+    assert point["recall"] == 0.5
+    assert adjusted["recall"] == 1.0
+    assert affiliation["precision"] < 1.0
+    assert affiliation["recall"] > 0.0
+
+
 def test_evaluate_scores_writes_report_artifacts(opcua_prepared: Path, tmp_path: Path):
     scores = tmp_path / "scores"
     out = tmp_path / "eval"
@@ -51,3 +79,27 @@ def test_evaluate_scores_writes_report_artifacts(opcua_prepared: Path, tmp_path:
     assert (out / "metrics.json").exists()
     assert (out / "threshold.json").exists()
     assert (out / "event_matches.json").exists()
+
+
+def test_evaluate_scores_honors_metric_compute_groups(opcua_prepared: Path, tmp_path: Path):
+    scores = tmp_path / "scores_compute"
+    out = tmp_path / "eval_compute"
+    ScoreRuns(
+        detector_registry=default_detector_registry(),
+        prepared=opcua_prepared,
+        scores=scores,
+        detector_name="forecast-ridge",
+        detector_parameters={"window": 24, "stride": 4, "lags": 1},
+    ).run()
+
+    result = EvaluateScores(
+        prepared=opcua_prepared,
+        scores=scores,
+        out=out,
+        policy=EvalPolicy(compute=["point", "point_adjusted", "affiliation"]),
+    ).run()
+
+    assert "event" not in result.metrics
+    assert "point" in result.metrics
+    assert "point_adjusted" in result.metrics
+    assert "affiliation" in result.metrics

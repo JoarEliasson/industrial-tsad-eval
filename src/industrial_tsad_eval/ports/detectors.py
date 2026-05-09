@@ -30,6 +30,13 @@ class Detector(Protocol):
         """Return JSON-compatible model metadata."""
 
 
+class DetectorExplainer(Protocol):
+    """Optional fitted detector interface for native explanation artifacts."""
+
+    def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Return ranked explanation rows for a single run."""
+
+
 class DetectorPlugin(Protocol):
     """Factory and metadata interface for a detector plugin."""
 

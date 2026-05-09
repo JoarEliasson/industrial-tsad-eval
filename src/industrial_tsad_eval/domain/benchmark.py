@@ -262,11 +262,13 @@ def _evaluation_config(payload: object) -> BenchmarkEvaluationConfig:
     dataset_policy_payload = payload.get("dataset_policies", {})
     if not isinstance(dataset_policy_payload, dict):
         raise BenchmarkConfigError("benchmark.evaluation.dataset_policies must be a table.")
-    dataset_policies = {
-        str(dataset): EvalPolicy.from_dict(dict(policy_payload))
-        for dataset, policy_payload in dataset_policy_payload.items()
-        if _is_mapping(policy_payload, f"benchmark.evaluation.dataset_policies.{dataset}")
-    }
+    dataset_policies: dict[str, EvalPolicy] = {}
+    for dataset, policy_payload in dataset_policy_payload.items():
+        if not _is_mapping(policy_payload, f"benchmark.evaluation.dataset_policies.{dataset}"):
+            continue
+        merged = policy.to_dict()
+        merged.update(dict(policy_payload))
+        dataset_policies[str(dataset)] = EvalPolicy.from_dict(merged)
     return BenchmarkEvaluationConfig(
         threshold_quantile=quantile,
         policy=policy,

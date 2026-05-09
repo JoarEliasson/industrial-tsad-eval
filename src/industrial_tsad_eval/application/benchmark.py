@@ -41,6 +41,10 @@ SUMMARY_COLUMNS = [
     "event_n_hits",
     "delay_mean_ns",
     "far_false_events_per_hour",
+    "point_adjusted_f1",
+    "affiliation_precision",
+    "affiliation_recall",
+    "affiliation_f1",
     "scores_dir",
     "eval_dir",
     "error",
@@ -278,6 +282,8 @@ def summary_row(result: BenchmarkExperimentResult) -> dict[str, Any]:
     event = _mapping(metrics.get("event"))
     delay = _mapping(metrics.get("delay"))
     far = _mapping(metrics.get("far"))
+    point_adjusted = _mapping(metrics.get("point_adjusted"))
+    affiliation = _mapping(metrics.get("affiliation"))
     return {
         "experiment_id": result.experiment_id,
         "dataset": result.dataset,
@@ -293,6 +299,10 @@ def summary_row(result: BenchmarkExperimentResult) -> dict[str, Any]:
         "event_n_hits": event.get("n_hits"),
         "delay_mean_ns": delay.get("mean"),
         "far_false_events_per_hour": far.get("false_events_per_hour"),
+        "point_adjusted_f1": point_adjusted.get("f1"),
+        "affiliation_precision": affiliation.get("precision"),
+        "affiliation_recall": affiliation.get("recall"),
+        "affiliation_f1": affiliation.get("f1"),
         "scores_dir": result.scores_dir,
         "eval_dir": result.eval_dir,
         "error": result.error,

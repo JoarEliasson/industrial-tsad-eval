@@ -23,6 +23,7 @@ from industrial_tsad_eval.domain.evidence import (
 )
 from industrial_tsad_eval.domain.validation import ValidationReport
 from industrial_tsad_eval.infrastructure.evidence_repository import LocalEvidenceRepository
+from industrial_tsad_eval.infrastructure.explanation_repository import LocalExplanationRepository
 from industrial_tsad_eval.infrastructure.json_utils import read_json, write_json
 from industrial_tsad_eval.infrastructure.prepared_repository import LocalPreparedDatasetRepository
 from industrial_tsad_eval.infrastructure.score_repository import LocalScoreRepository
@@ -131,6 +132,7 @@ class GenerateEvidence:
         protocol: str = "naive",
         top_k: int = 5,
         max_events: int = 100,
+        explanation_source: str = "auto",
     ):
         self.prepared = Path(prepared)
         self.scores = Path(scores)
@@ -140,6 +142,7 @@ class GenerateEvidence:
         self.protocol = protocol
         self.top_k = top_k
         self.max_events = max_events
+        self.explanation_source = _explanation_source(explanation_source)
 
     def run(self) -> GenerateEvidenceResult:
         """Generate bundles and write evidence artifacts."""
@@ -156,6 +159,7 @@ class GenerateEvidence:
 
         prepared_repository = LocalPreparedDatasetRepository(self.prepared)
         score_repository = LocalScoreRepository(self.scores)
+        explanation_repository = LocalExplanationRepository(self.scores / "explanations")
         features = _feature_columns(prepared_repository)
         baseline = _RobustBaseline.fit(prepared_repository, self.protocol, features)
         source_events = self._source_events(prepared_repository)[: self.max_events]
@@ -164,6 +168,8 @@ class GenerateEvidence:
                 prepared_repository=prepared_repository,
                 score_repository=score_repository,
                 baseline=baseline,
+                explanation_repository=explanation_repository,
+                explanation_source=self.explanation_source,
                 source_event=source_event,
                 top_k=self.top_k,
                 protocol=self.protocol,
@@ -302,6 +308,8 @@ def _build_bundle(
     prepared_repository: LocalPreparedDatasetRepository,
     score_repository: LocalScoreRepository,
     baseline: _RobustBaseline,
+    explanation_repository: LocalExplanationRepository,
+    explanation_source: str,
     source_event: _SourceEvent,
     top_k: int,
     protocol: str,
@@ -320,6 +328,37 @@ def _build_bundle(
     values = frame.reindex(columns=baseline.features, fill_value=0.0).to_numpy(dtype=np.float64)
     event_values = values[event_mask]
     event_ts = ts_ns[event_mask]
+    native = _native_explanation(
+        explanation_repository,
+        source_event,
+        top_k,
+        explanation_source,
+    )
+    if native is not None:
+        top_variables, top_time_windows, local_rankings, native_provenance = native
+        return EvidenceBundle(
+            dataset=prepared_repository.dataset_name,
+            run_id=source_event.run_id,
+            event_id=source_event.event_id,
+            event_source=source_event.event_source,
+            source_event_id=source_event.source_event_id,
+            matched_gt_event_id=source_event.matched_gt_event_id,
+            is_matched_pred_event=source_event.is_matched_pred_event,
+            event_start_ts_ns=source_event.start_ts_ns,
+            event_end_ts_ns=source_event.end_ts_ns,
+            top_variables=top_variables,
+            top_time_windows=top_time_windows,
+            score_context=_score_context(score_repository, source_event),
+            local_rankings=local_rankings,
+            provenance={
+                **native_provenance,
+                "protocol": protocol,
+                "top_k": top_k,
+                "scores_dir": str(scores_dir),
+                "eval_dir": str(eval_dir) if eval_dir is not None else None,
+            },
+        )
+
     z_scores = np.abs((event_values - baseline.median) / baseline.scale)
     variable_importance = (
         z_scores.mean(axis=0) if len(z_scores) else np.zeros(len(baseline.features))
@@ -356,12 +395,124 @@ def _build_bundle(
         local_rankings=_local_rankings(event_ts, z_scores, baseline.features, top_k),
         provenance={
             "generator": "robust-zscore-v1",
+            "explanation_source": "robust",
+            "fallback_from_native": explanation_source == "auto",
             "protocol": protocol,
             "top_k": top_k,
             "scores_dir": str(scores_dir),
             "eval_dir": str(eval_dir) if eval_dir is not None else None,
         },
     )
+
+
+def _native_explanation(
+    repository: LocalExplanationRepository,
+    source_event: _SourceEvent,
+    top_k: int,
+    explanation_source: str,
+) -> (
+    tuple[
+        list[EvidenceVariable],
+        list[EvidenceTimeWindow],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]
+    | None
+):
+    if explanation_source == "robust":
+        return None
+    try:
+        explanations = repository.read_run_explanations(source_event.run_id)
+    except FileNotFoundError:
+        if explanation_source == "native":
+            raise EvidenceError(
+                f"Native explanation artifacts are required but missing for run "
+                f"{source_event.run_id!r}."
+            ) from None
+        return None
+    window = explanations.loc[
+        (explanations["ts_ns"] >= source_event.start_ts_ns)
+        & (explanations["ts_ns"] < source_event.end_ts_ns)
+    ].copy()
+    if window.empty:
+        if explanation_source == "native":
+            raise EvidenceError(
+                f"Native explanation artifacts contain no rows inside event "
+                f"{source_event.event_id!r}."
+            )
+        return None
+
+    method = str(window["method"].iloc[0]) if "method" in window.columns else "native"
+    grouped = (
+        window.groupby("variable", as_index=False)["importance"]
+        .mean()
+        .sort_values(["importance", "variable"], ascending=[False, True])
+        .head(top_k)
+    )
+    top_variables = [
+        EvidenceVariable(
+            variable=str(row["variable"]),
+            rank=index,
+            importance=float(row["importance"]),
+            mean_abs_z=float(row["importance"]),
+        )
+        for index, row in enumerate(grouped.to_dict("records"), start=1)
+    ]
+    local_rankings = [
+        {
+            "ts_ns": int(ts_value),
+            "top_variables": [
+                str(item["variable"])
+                for item in frame.sort_values(
+                    ["rank", "importance"], ascending=[True, False]
+                ).to_dict("records")[:top_k]
+            ],
+        }
+        for ts_value, frame in window.groupby("ts_ns")
+    ]
+    top_time_windows = _native_time_windows(window, source_event)
+    return (
+        top_variables,
+        top_time_windows,
+        local_rankings,
+        {
+            "generator": "native-explanation-v1",
+            "explanation_source": "native",
+            "explainer_method": method,
+            "fallback_from_native": False,
+            "explanations_dir": str(repository.root),
+        },
+    )
+
+
+def _native_time_windows(
+    rows: Any,
+    source_event: _SourceEvent,
+) -> list[EvidenceTimeWindow]:
+    if "window_start_ts_ns" not in rows.columns or "window_end_ts_ns" not in rows.columns:
+        return [
+            EvidenceTimeWindow(
+                start_ts_ns=source_event.start_ts_ns,
+                end_ts_ns=source_event.end_ts_ns,
+                rank=1,
+                importance=float(rows["importance"].mean()),
+            )
+        ]
+    grouped = (
+        rows.groupby(["window_start_ts_ns", "window_end_ts_ns"], as_index=False)["importance"]
+        .mean()
+        .sort_values("importance", ascending=False)
+        .head(3)
+    )
+    return [
+        EvidenceTimeWindow(
+            start_ts_ns=int(row["window_start_ts_ns"]),
+            end_ts_ns=int(row["window_end_ts_ns"]),
+            rank=index,
+            importance=float(row["importance"]),
+        )
+        for index, row in enumerate(grouped.to_dict("records"), start=1)
+    ]
 
 
 def _top_time_windows(
@@ -556,3 +707,10 @@ def _event_source(value: str) -> EvidenceSource:
     if normalized not in {"oracle", "operational"}:
         raise ValueError("event_source must be either 'oracle' or 'operational'.")
     return cast(EvidenceSource, normalized)
+
+
+def _explanation_source(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in {"auto", "native", "robust"}:
+        raise ValueError("explanation_source must be one of: auto, native, robust.")
+    return normalized

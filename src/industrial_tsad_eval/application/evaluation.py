@@ -10,9 +10,11 @@ import numpy as np
 
 from industrial_tsad_eval.domain.evaluation import (
     cluster_anomalies_to_pred_events,
+    compute_affiliation_prf,
     compute_delays,
     compute_event_prf,
     compute_false_alarm_rates,
+    compute_point_prf_for_scores,
     infer_period_ns,
     match_pred_to_gt_events,
     resolve_effective_merge_gap_ns,
@@ -70,10 +72,15 @@ class EvaluateScores:
         pred_events_by_run: dict[str, list[PredEvent]] = {}
         run_durations_ns: dict[str, int] = {}
         window_count_by_run: dict[str, int] = {}
+        score_timestamps_by_run: dict[str, np.ndarray] = {}
+        score_values_by_run: dict[str, np.ndarray] = {}
 
         for run_id in sorted(score_files):
             score_frame = self.score_repository.read_run_scores(run_id)
             timestamps = score_frame["ts_ns"].to_numpy(dtype=np.int64)
+            scores = score_frame["score"].to_numpy(dtype=np.float64)
+            score_timestamps_by_run[run_id] = timestamps
+            score_values_by_run[run_id] = scores
             period_ns = infer_period_ns(timestamps) or _prepared_period_ns(
                 self.prepared_repository,
                 run_id,
@@ -85,9 +92,7 @@ class EvaluateScores:
                 config.merge_gap_skipped_samples,
                 config.merge_gap_jitter_ratio,
             )
-            anomaly_ts_ns = score_frame.loc[score_frame["score"] >= threshold, "ts_ns"].to_numpy(
-                dtype=np.int64
-            )
+            anomaly_ts_ns = timestamps[scores >= threshold]
             pred_events_by_run[run_id] = cluster_anomalies_to_pred_events(
                 run_id,
                 anomaly_ts_ns,
@@ -107,23 +112,41 @@ class EvaluateScores:
             all_pred_events,
             config.grace_ns,
         )
-        event_metrics = compute_event_prf(gt_events, all_pred_events, gt_matches)
-        delay_metrics = compute_delays(gt_events, gt_matches, all_pred_events)
-        far_metrics = compute_false_alarm_rates(
-            split["train_runs"] + split["val_runs"],
-            pred_events_by_run,
-            run_durations_ns,
-            window_count_by_run,
-        )
         metrics = {
             "dataset": self.prepared_repository.dataset_name,
             "protocol": self.protocol,
             "threshold": threshold,
             "policy": self.policy.to_dict(),
-            "event": event_metrics,
-            "delay": delay_metrics,
-            "far": far_metrics,
         }
+        compute_groups = set(config.compute)
+        if "event" in compute_groups:
+            metrics["event"] = compute_event_prf(gt_events, all_pred_events, gt_matches)
+        if "delay" in compute_groups:
+            metrics["delay"] = compute_delays(gt_events, gt_matches, all_pred_events)
+        if "far" in compute_groups:
+            metrics["far"] = compute_false_alarm_rates(
+                split["train_runs"] + split["val_runs"],
+                pred_events_by_run,
+                run_durations_ns,
+                window_count_by_run,
+            )
+        if "point" in compute_groups:
+            metrics["point"] = compute_point_prf_for_scores(
+                score_timestamps_by_run,
+                score_values_by_run,
+                gt_events,
+                threshold,
+            )
+        if "point_adjusted" in compute_groups:
+            metrics["point_adjusted"] = compute_point_prf_for_scores(
+                score_timestamps_by_run,
+                score_values_by_run,
+                gt_events,
+                threshold,
+                point_adjusted=True,
+            )
+        if "affiliation" in compute_groups:
+            metrics["affiliation"] = compute_affiliation_prf(gt_events, all_pred_events)
         self.artifact_writer.write_json("metrics.json", metrics)
         self.artifact_writer.write_json(
             "event_matches.json",

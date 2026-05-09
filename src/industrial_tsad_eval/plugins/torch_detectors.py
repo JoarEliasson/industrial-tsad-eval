@@ -73,7 +73,7 @@ class ForecastLSTMConfig:
 
 @dataclass(frozen=True)
 class DRAConfig:
-    """Configuration for detection-only DRA Model 1."""
+    """Configuration for DRA-style TCN detection and saliency."""
 
     common: TorchTrainingConfig
     d: int = 16
@@ -96,11 +96,12 @@ class DRAConfig:
 
 @dataclass(frozen=True)
 class InterFusionConfig:
-    """Configuration for detection-only InterFusion HVAE."""
+    """Configuration for InterFusion-style HVAE detection and attribution."""
 
     common: TorchTrainingConfig
     latent_dim: int = 3
     kl_warmup: int = 2
+    mc_samples: int = 8
 
     @classmethod
     def from_parameters(cls, parameters: dict[str, Any]) -> InterFusionConfig:
@@ -109,21 +110,29 @@ class InterFusionConfig:
             common=TorchTrainingConfig.from_parameters(parameters),
             latent_dim=int(parameters.get("latent_dim", cls.latent_dim)),
             kl_warmup=int(parameters.get("kl_warmup", cls.kl_warmup)),
+            mc_samples=int(parameters.get("mc_samples", cls.mc_samples)),
         )
         if config.latent_dim <= 0:
             raise ValueError("latent_dim must be greater than 0.")
         if config.kl_warmup < 0:
             raise ValueError("kl_warmup must be non-negative.")
+        if config.mc_samples <= 0:
+            raise ValueError("mc_samples must be greater than 0.")
         return config
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible metadata."""
-        return {**self.common.to_dict(), "latent_dim": self.latent_dim, "kl_warmup": self.kl_warmup}
+        return {
+            **self.common.to_dict(),
+            "latent_dim": self.latent_dim,
+            "kl_warmup": self.kl_warmup,
+            "mc_samples": self.mc_samples,
+        }
 
 
 @dataclass(frozen=True)
 class DRCADConfig:
-    """Configuration for detection-only DRCAD."""
+    """Configuration for DRCAD-style detection and counterfactual attribution."""
 
     common: TorchTrainingConfig
     patch_size: int = 4
@@ -253,7 +262,7 @@ class ForecastLSTMDetector:
 
 
 class DRADetector:
-    """Detection-only DRA Model 1 using a compact TCN forecaster."""
+    """DRA-style TCN detector with residual-gradient saliency explanations."""
 
     def __init__(self, config: DRAConfig):
         self.config = config
@@ -314,6 +323,38 @@ class DRADetector:
         )
         return score_frame(ts_ns, target_indices, scores)
 
+    def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Explain one prepared run using residual-weighted input gradients."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, y, target_indices = forecast_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return _empty_explanation_frame()
+        importances = _forecast_saliency(
+            torch,
+            model,
+            x,
+            y,
+            self.config.common,
+            self.device,
+            input_layout="feature_time",
+            absolute=True,
+        )
+        return _ranked_explanation_frame(
+            ts_ns=ts_ns,
+            target_indices=target_indices,
+            features=self.features,
+            importances=importances,
+            method="dra-residual-gradient-saliency",
+            window=self.config.common.window,
+            top_k=self.config.common.explanation_top_k,
+        )
+
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
         return _metadata(
@@ -328,7 +369,7 @@ class DRADetector:
 
 
 class InterFusionDetector:
-    """Detection-only InterFusion HVAE window reconstruction detector."""
+    """InterFusion-style HVAE detector with stochastic reconstruction attribution."""
 
     def __init__(self, config: InterFusionConfig):
         self.config = config
@@ -372,6 +413,35 @@ class InterFusionDetector:
         scores = _score_window_model(torch, model, x, self.config.common, self.device)
         return score_frame(ts_ns, end_indices, scores)
 
+    def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Explain one prepared run using Monte Carlo reconstruction/imputation error."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, end_indices = window_end_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return _empty_explanation_frame()
+        importances = _hvae_reconstruction_importance(
+            torch,
+            model,
+            x,
+            self.config,
+            self.device,
+        )
+        return _ranked_explanation_frame(
+            ts_ns=ts_ns,
+            target_indices=end_indices,
+            features=self.features,
+            importances=importances,
+            method="interfusion-mc-reconstruction-imputation",
+            window=self.config.common.window,
+            top_k=self.config.common.explanation_top_k,
+        )
+
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
         return _metadata(
@@ -386,7 +456,7 @@ class InterFusionDetector:
 
 
 class DRCADDetector:
-    """Detection-only DRCAD dual-view contrastive detector."""
+    """DRCAD-style dual-view detector with counterfactual reconstruction attribution."""
 
     def __init__(self, config: DRCADConfig):
         self.config = config
@@ -435,6 +505,35 @@ class DRCADDetector:
         scores = _score_window_model(torch, model, x, self.config.common, self.device)
         return score_frame(ts_ns, end_indices, scores)
 
+    def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
+        """Explain one prepared run using counterfactual reconstruction deltas."""
+        torch, model = _fitted(self)
+        data, ts_ns = read_feature_array(repository, run_id, self.features)
+        data = self.standardizer.transform(data)
+        x, end_indices = window_end_windows(
+            data,
+            window=self.config.common.window,
+            stride=self.config.common.score_stride,
+        )
+        if len(x) == 0:
+            return _empty_explanation_frame()
+        importances = _drcad_counterfactual_importance(
+            torch,
+            model,
+            x,
+            self.config.common,
+            self.device,
+        )
+        return _ranked_explanation_frame(
+            ts_ns=ts_ns,
+            target_indices=end_indices,
+            features=self.features,
+            importances=importances,
+            method="drcad-cvae-counterfactual-delta",
+            window=self.config.common.window,
+            top_k=self.config.common.explanation_top_k,
+        )
+
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
         return _metadata(
@@ -462,7 +561,7 @@ class ForecastLSTMPlugin:
 
 
 class DRAPlugin:
-    """Factory for the detection-only DRA detector."""
+    """Factory for the DRA detector."""
 
     @property
     def name(self) -> str:
@@ -475,7 +574,7 @@ class DRAPlugin:
 
 
 class InterFusionPlugin:
-    """Factory for the detection-only InterFusion detector."""
+    """Factory for the InterFusion detector."""
 
     @property
     def name(self) -> str:
@@ -488,7 +587,7 @@ class InterFusionPlugin:
 
 
 class DRCADPlugin:
-    """Factory for the detection-only DRCAD detector."""
+    """Factory for the DRCAD detector."""
 
     @property
     def name(self) -> str:
@@ -720,6 +819,144 @@ def _score_window_model(
             batch_x = torch.tensor(x[window_slice], dtype=torch.float32).to(device)
             scores[window_slice] = model.deterministic_score(batch_x).cpu().numpy()
     return scores
+
+
+def _forecast_saliency(
+    torch: Any,
+    model: Any,
+    x: np.ndarray,
+    y: np.ndarray,
+    config: TorchTrainingConfig,
+    device: str,
+    *,
+    input_layout: str,
+    absolute: bool,
+) -> np.ndarray:
+    importances = np.empty((x.shape[0], x.shape[2]), dtype=np.float64)
+    model.eval()
+    for window_slice in batch_slices(x.shape[0], config.score_batch_size):
+        batch_x = torch.tensor(
+            _layout(x[window_slice], input_layout),
+            dtype=torch.float32,
+            device=device,
+            requires_grad=True,
+        )
+        batch_y = torch.tensor(y[window_slice], dtype=torch.float32, device=device)
+        prediction = model(batch_x)
+        residual = prediction - batch_y
+        batch_scores = residual.abs().mean(dim=-1) if absolute else (residual**2).mean(dim=-1)
+        model.zero_grad(set_to_none=True)
+        batch_scores.sum().backward()
+        gradient = batch_x.grad.detach().abs().cpu().numpy()
+        if input_layout == "feature_time":
+            gradient = np.transpose(gradient, (0, 2, 1))
+        gradient_importance = gradient.mean(axis=1)
+        residual_importance = residual.detach().abs().cpu().numpy()
+        importances[window_slice] = gradient_importance + residual_importance
+    return importances
+
+
+def _hvae_reconstruction_importance(
+    torch: Any,
+    model: Any,
+    x: np.ndarray,
+    config: InterFusionConfig,
+    device: str,
+) -> np.ndarray:
+    importances = np.empty((x.shape[0], x.shape[2]), dtype=np.float64)
+    was_training = bool(model.training)
+    try:
+        model.train()
+        with torch.no_grad():
+            for window_slice in batch_slices(x.shape[0], config.common.score_batch_size):
+                batch_x = torch.tensor(x[window_slice], dtype=torch.float32, device=device)
+                accumulated = torch.zeros(
+                    (batch_x.shape[0], batch_x.shape[2]),
+                    dtype=torch.float32,
+                    device=device,
+                )
+                for _sample in range(config.mc_samples):
+                    reconstruction, _mu, _logvar = model(batch_x)
+                    accumulated += (reconstruction - batch_x).abs().mean(dim=1)
+                importances[window_slice] = (accumulated / float(config.mc_samples)).cpu().numpy()
+    finally:
+        model.train(was_training)
+    return importances
+
+
+def _drcad_counterfactual_importance(
+    torch: Any,
+    model: Any,
+    x: np.ndarray,
+    config: TorchTrainingConfig,
+    device: str,
+) -> np.ndarray:
+    importances = np.empty((x.shape[0], x.shape[2]), dtype=np.float64)
+    model.eval()
+    with torch.no_grad():
+        for window_slice in batch_slices(x.shape[0], config.score_batch_size):
+            batch_x = torch.tensor(x[window_slice], dtype=torch.float32, device=device)
+            reconstruction = model.reconstruct(batch_x)
+            recon_delta = (reconstruction - batch_x).abs().mean(dim=1)
+            scores = model.deterministic_score(batch_x).reshape(-1, 1)
+            importances[window_slice] = (recon_delta * (1.0 + scores)).cpu().numpy()
+    return importances
+
+
+def _ranked_explanation_frame(
+    *,
+    ts_ns: np.ndarray,
+    target_indices: np.ndarray,
+    features: list[str],
+    importances: np.ndarray,
+    method: str,
+    window: int,
+    top_k: int,
+) -> pd.DataFrame:
+    top_count = min(top_k, len(features))
+    rows: list[dict[str, Any]] = []
+    for row_index, target_index in enumerate(target_indices):
+        ranked = np.argsort(-importances[row_index])[:top_count]
+        target = int(target_index)
+        window_start = max(target - window + 1, 0)
+        for rank, feature_index in enumerate(ranked, start=1):
+            rows.append(
+                {
+                    "ts_ns": int(ts_ns[target]),
+                    "variable": features[int(feature_index)],
+                    "importance": float(max(importances[row_index, int(feature_index)], 0.0)),
+                    "rank": int(rank),
+                    "method": method,
+                    "window_start_ts_ns": int(ts_ns[window_start]),
+                    "window_end_ts_ns": int(ts_ns[target]),
+                }
+            )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "ts_ns",
+            "variable",
+            "importance",
+            "rank",
+            "method",
+            "window_start_ts_ns",
+            "window_end_ts_ns",
+        ],
+    )
+
+
+def _empty_explanation_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "ts_ns": np.empty(0, dtype=np.int64),
+            "variable": np.empty(0, dtype=object),
+            "importance": np.empty(0, dtype=np.float64),
+            "rank": np.empty(0, dtype=np.int64),
+            "method": np.empty(0, dtype=object),
+            "window_start_ts_ns": np.empty(0, dtype=np.int64),
+            "window_end_ts_ns": np.empty(0, dtype=np.int64),
+        }
+    )
 
 
 def _layout(array: np.ndarray, layout: str) -> np.ndarray:
