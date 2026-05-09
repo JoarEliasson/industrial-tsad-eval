@@ -119,7 +119,7 @@ def _validate_run_parquet(
     warnings: list[str],
 ) -> tuple[int, int, int] | None:
     try:
-        parquet_schema = pq.read_schema(parquet_path)
+        parquet_schema = pq.read_schema(parquet_path)  # type: ignore[no-untyped-call]
     except Exception as exc:
         errors.append(f"Run {run_id}: failed to read parquet schema: {exc}")
         return None

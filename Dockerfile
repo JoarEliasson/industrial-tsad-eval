@@ -20,7 +20,7 @@ RUN apt-get update \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md .gitignore ./
 COPY src ./src
 COPY tests ./tests
 COPY docs ./docs

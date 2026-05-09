@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "industrial_tsad_eval"
@@ -50,15 +49,13 @@ def test_public_repo_uses_neutral_assistant_replay_language():
 
 
 def test_temporary_thesis_draft_pdf_is_ignored():
-    result = subprocess.run(
-        ["git", "check-ignore", "latest_draft.pdf"],
-        cwd=PROJECT_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    ignore_patterns = {
+        line.strip()
+        for line in (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
 
-    assert result.returncode == 0
+    assert "latest_draft.pdf" in ignore_patterns
 
 
 def test_tracked_files_do_not_reference_old_repo_paths():
