@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -119,7 +120,8 @@ def _validate_run_parquet(
     warnings: list[str],
 ) -> tuple[int, int, int] | None:
     try:
-        parquet_schema = pq.read_schema(parquet_path)  # type: ignore[no-untyped-call]
+        read_schema = cast(Callable[[Path], pa.Schema], pq.read_schema)
+        parquet_schema = read_schema(parquet_path)
     except Exception as exc:
         errors.append(f"Run {run_id}: failed to read parquet schema: {exc}")
         return None

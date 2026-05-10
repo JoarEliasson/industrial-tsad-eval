@@ -21,9 +21,13 @@ from industrial_tsad_eval.plugins.registry import default_detector_registry
 from industrial_tsad_eval.plugins.torch_common import (
     TorchTrainingConfig,
     cap_aligned_arrays,
+    forecast_window_batches,
+    forecast_window_batches_at,
     forecast_windows,
     require_torch,
     resolve_torch_device,
+    window_end_batches,
+    window_end_batches_at,
     window_end_windows,
 )
 
@@ -72,9 +76,48 @@ def test_window_helpers_align_timestamps_and_subsample_deterministically():
     np.testing.assert_array_equal(capped_b, capped_b_again)
 
 
+def test_streaming_window_helpers_match_materialized_windows():
+    data = np.arange(120, dtype=np.float32).reshape(40, 3)
+    full_x, full_y, full_targets = forecast_windows(data, window=5, stride=4)
+    stream = list(forecast_window_batches(data, window=5, stride=4, batch_size=3))
+    stream_x = np.concatenate([part[0] for part in stream], axis=0)
+    stream_y = np.concatenate([part[1] for part in stream], axis=0)
+    stream_targets = np.concatenate([part[2] for part in stream], axis=0)
+
+    np.testing.assert_array_equal(stream_x, full_x)
+    np.testing.assert_array_equal(stream_y, full_y)
+    np.testing.assert_array_equal(stream_targets, full_targets)
+    assert all(part[0].shape[0] <= 3 for part in stream)
+
+    selected = np.array([5, 13, 37], dtype=np.int64)
+    selected_stream = list(forecast_window_batches_at(data, selected, window=5, batch_size=2))
+    selected_targets = np.concatenate([part[2] for part in selected_stream], axis=0)
+    np.testing.assert_array_equal(selected_targets, selected)
+
+    full_window_x, full_ends = window_end_windows(data, window=5, stride=4)
+    window_stream = list(window_end_batches(data, window=5, stride=4, batch_size=3))
+    np.testing.assert_array_equal(
+        np.concatenate([part[0] for part in window_stream], axis=0),
+        full_window_x,
+    )
+    np.testing.assert_array_equal(
+        np.concatenate([part[1] for part in window_stream], axis=0),
+        full_ends,
+    )
+
+    selected_ends = np.array([4, 12, 36], dtype=np.int64)
+    selected_end_stream = list(window_end_batches_at(data, selected_ends, window=5, batch_size=2))
+    np.testing.assert_array_equal(
+        np.concatenate([part[1] for part in selected_end_stream], axis=0),
+        selected_ends,
+    )
+
+
 def test_invalid_torch_config_fails_early():
     with pytest.raises(ValueError, match="window"):
         TorchTrainingConfig.from_parameters({"window": 1})
+    with pytest.raises(ValueError, match="explanation_score_quantile"):
+        TorchTrainingConfig.from_parameters({"explanation_score_quantile": 1.0})
     with pytest.raises(ValueError, match="device"):
         resolve_torch_device(object(), "mps")
     with pytest.raises(ValueError, match="divisible"):

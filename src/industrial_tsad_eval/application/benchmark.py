@@ -265,7 +265,13 @@ class RunBenchmark:
                 },
             )
             return result
-        except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        except (
+            IndustrialTSADError,
+            ValueError,
+            RuntimeError,
+            FileNotFoundError,
+            MemoryError,
+        ) as exc:
             result = _failed_result(
                 experiment,
                 f"{type(exc).__name__}: {exc}",

@@ -15,6 +15,8 @@ from industrial_tsad_eval.plugins.torch_common import (
     cap_aligned_arrays,
     empty_score_frame,
     feature_columns,
+    forecast_window_batches,
+    forecast_window_batches_at,
     forecast_windows,
     read_feature_array,
     require_torch,
@@ -23,6 +25,8 @@ from industrial_tsad_eval.plugins.torch_common import (
     set_torch_seed,
     torch_device_name,
     training_arrays,
+    window_end_batches,
+    window_end_batches_at,
     window_end_windows,
 )
 from industrial_tsad_eval.plugins.torch_models import (
@@ -185,6 +189,15 @@ class DRCADConfig:
         }
 
 
+@dataclass(frozen=True)
+class _ScoreContext:
+    """Per-run score rows retained for sparse native explanation selection."""
+
+    run_id: str
+    row_indices: np.ndarray
+    scores: np.ndarray
+
+
 class ForecastLSTMDetector:
     """Many-to-one LSTM next-step forecasting detector."""
 
@@ -230,22 +243,16 @@ class ForecastLSTMDetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, y, target_indices = forecast_windows(
-            data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
-        )
-        if len(x) == 0:
-            return empty_score_frame()
-        scores = _score_forecast_model(
+        scores, target_indices = _score_forecast_run(
             torch,
             model,
-            x,
-            y,
+            data,
             self.config.common,
             self.device,
             input_layout="time_feature",
         )
+        if len(target_indices) == 0:
+            return empty_score_frame()
         return score_frame(ts_ns, target_indices, scores)
 
     def metadata(self) -> dict[str, Any]:
@@ -274,6 +281,7 @@ class DRADetector:
         self.standardizer = FeatureStandardizer(enabled=False)
         self.train_window_count = 0
         self.training_losses: list[float] = []
+        self._last_score_context: _ScoreContext | None = None
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the TCN forecaster on normal train and validation runs."""
@@ -304,23 +312,19 @@ class DRADetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, y, target_indices = forecast_windows(
-            data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
-        )
-        if len(x) == 0:
-            return empty_score_frame()
-        scores = _score_forecast_model(
+        scores, target_indices = _score_forecast_run(
             torch,
             model,
-            x,
-            y,
+            data,
             self.config.common,
             self.device,
             input_layout="feature_time",
             absolute=True,
         )
+        if len(target_indices) == 0:
+            self._last_score_context = None
+            return empty_score_frame()
+        self._last_score_context = _ScoreContext(run_id, target_indices, scores)
         return score_frame(ts_ns, target_indices, scores)
 
     def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
@@ -328,32 +332,59 @@ class DRADetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, y, target_indices = forecast_windows(
-            data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
+        context = (
+            self._last_score_context
+            if self._last_score_context is not None and self._last_score_context.run_id == run_id
+            else None
         )
-        if len(x) == 0:
-            return _empty_explanation_frame()
-        importances = _forecast_saliency(
-            torch,
-            model,
-            x,
-            y,
+        target_pool = (
+            _forecast_target_pool(
+                len(ts_ns),
+                self.config.common.window,
+                self.config.common.score_stride,
+            )
+            if context is None
+            else context.row_indices
+        )
+        target_indices = _selected_explanation_indices(
+            repository,
+            run_id,
+            ts_ns,
+            target_pool,
+            np.zeros(len(target_pool), dtype=np.float64) if context is None else context.scores,
             self.config.common,
-            self.device,
-            input_layout="feature_time",
-            absolute=True,
         )
-        return _ranked_explanation_frame(
-            ts_ns=ts_ns,
-            target_indices=target_indices,
-            features=self.features,
-            importances=importances,
-            method="dra-residual-gradient-saliency",
+        if len(target_indices) == 0:
+            return _empty_explanation_frame()
+        frames: list[pd.DataFrame] = []
+        for x, y, batch_targets in forecast_window_batches_at(
+            data,
+            target_indices,
             window=self.config.common.window,
-            top_k=self.config.common.explanation_top_k,
-        )
+            batch_size=self.config.common.score_batch_size,
+        ):
+            importances = _forecast_saliency(
+                torch,
+                model,
+                x,
+                y,
+                self.config.common,
+                self.device,
+                input_layout="feature_time",
+                absolute=True,
+            )
+            frames.append(
+                _ranked_explanation_frame(
+                    ts_ns=ts_ns,
+                    target_indices=batch_targets,
+                    features=self.features,
+                    importances=importances,
+                    method="dra-residual-gradient-saliency",
+                    window=self.config.common.window,
+                    top_k=self.config.common.explanation_top_k,
+                )
+            )
+        return _concat_explanation_frames(frames)
 
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
@@ -381,6 +412,7 @@ class InterFusionDetector:
         self.standardizer = FeatureStandardizer(enabled=False)
         self.train_window_count = 0
         self.training_losses: list[float] = []
+        self._last_score_context: _ScoreContext | None = None
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the HVAE on normal train and validation windows."""
@@ -403,14 +435,17 @@ class InterFusionDetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, end_indices = window_end_windows(
+        scores, end_indices = _score_window_run(
+            torch,
+            model,
             data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
+            self.config.common,
+            self.device,
         )
-        if len(x) == 0:
+        if len(end_indices) == 0:
+            self._last_score_context = None
             return empty_score_frame()
-        scores = _score_window_model(torch, model, x, self.config.common, self.device)
+        self._last_score_context = _ScoreContext(run_id, end_indices, scores)
         return score_frame(ts_ns, end_indices, scores)
 
     def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
@@ -418,29 +453,52 @@ class InterFusionDetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, end_indices = window_end_windows(
-            data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
+        context = (
+            self._last_score_context
+            if self._last_score_context is not None and self._last_score_context.run_id == run_id
+            else None
         )
-        if len(x) == 0:
+        end_pool = (
+            _window_end_pool(len(ts_ns), self.config.common.window, self.config.common.score_stride)
+            if context is None
+            else context.row_indices
+        )
+        end_indices = _selected_explanation_indices(
+            repository,
+            run_id,
+            ts_ns,
+            end_pool,
+            np.zeros(len(end_pool), dtype=np.float64) if context is None else context.scores,
+            self.config.common,
+        )
+        if len(end_indices) == 0:
             return _empty_explanation_frame()
-        importances = _hvae_reconstruction_importance(
-            torch,
-            model,
-            x,
-            self.config,
-            self.device,
-        )
-        return _ranked_explanation_frame(
-            ts_ns=ts_ns,
-            target_indices=end_indices,
-            features=self.features,
-            importances=importances,
-            method="interfusion-mc-reconstruction-imputation",
+        frames: list[pd.DataFrame] = []
+        for x, batch_ends in window_end_batches_at(
+            data,
+            end_indices,
             window=self.config.common.window,
-            top_k=self.config.common.explanation_top_k,
-        )
+            batch_size=self.config.common.score_batch_size,
+        ):
+            importances = _hvae_reconstruction_importance(
+                torch,
+                model,
+                x,
+                self.config,
+                self.device,
+            )
+            frames.append(
+                _ranked_explanation_frame(
+                    ts_ns=ts_ns,
+                    target_indices=batch_ends,
+                    features=self.features,
+                    importances=importances,
+                    method="interfusion-mc-reconstruction-imputation",
+                    window=self.config.common.window,
+                    top_k=self.config.common.explanation_top_k,
+                )
+            )
+        return _concat_explanation_frames(frames)
 
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
@@ -468,6 +526,7 @@ class DRCADDetector:
         self.standardizer = FeatureStandardizer(enabled=False)
         self.train_window_count = 0
         self.training_losses: list[float] = []
+        self._last_score_context: _ScoreContext | None = None
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the dual-view contrastive model on normal windows."""
@@ -495,14 +554,17 @@ class DRCADDetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, end_indices = window_end_windows(
+        scores, end_indices = _score_window_run(
+            torch,
+            model,
             data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
+            self.config.common,
+            self.device,
         )
-        if len(x) == 0:
+        if len(end_indices) == 0:
+            self._last_score_context = None
             return empty_score_frame()
-        scores = _score_window_model(torch, model, x, self.config.common, self.device)
+        self._last_score_context = _ScoreContext(run_id, end_indices, scores)
         return score_frame(ts_ns, end_indices, scores)
 
     def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
@@ -510,29 +572,52 @@ class DRCADDetector:
         torch, model = _fitted(self)
         data, ts_ns = read_feature_array(repository, run_id, self.features)
         data = self.standardizer.transform(data)
-        x, end_indices = window_end_windows(
-            data,
-            window=self.config.common.window,
-            stride=self.config.common.score_stride,
+        context = (
+            self._last_score_context
+            if self._last_score_context is not None and self._last_score_context.run_id == run_id
+            else None
         )
-        if len(x) == 0:
-            return _empty_explanation_frame()
-        importances = _drcad_counterfactual_importance(
-            torch,
-            model,
-            x,
+        end_pool = (
+            _window_end_pool(len(ts_ns), self.config.common.window, self.config.common.score_stride)
+            if context is None
+            else context.row_indices
+        )
+        end_indices = _selected_explanation_indices(
+            repository,
+            run_id,
+            ts_ns,
+            end_pool,
+            np.zeros(len(end_pool), dtype=np.float64) if context is None else context.scores,
             self.config.common,
-            self.device,
         )
-        return _ranked_explanation_frame(
-            ts_ns=ts_ns,
-            target_indices=end_indices,
-            features=self.features,
-            importances=importances,
-            method="drcad-cvae-counterfactual-delta",
+        if len(end_indices) == 0:
+            return _empty_explanation_frame()
+        frames: list[pd.DataFrame] = []
+        for x, batch_ends in window_end_batches_at(
+            data,
+            end_indices,
             window=self.config.common.window,
-            top_k=self.config.common.explanation_top_k,
-        )
+            batch_size=self.config.common.score_batch_size,
+        ):
+            importances = _drcad_counterfactual_importance(
+                torch,
+                model,
+                x,
+                self.config.common,
+                self.device,
+            )
+            frames.append(
+                _ranked_explanation_frame(
+                    ts_ns=ts_ns,
+                    target_indices=batch_ends,
+                    features=self.features,
+                    importances=importances,
+                    method="drcad-cvae-counterfactual-delta",
+                    window=self.config.common.window,
+                    top_k=self.config.common.explanation_top_k,
+                )
+            )
+        return _concat_explanation_frames(frames)
 
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
@@ -612,6 +697,121 @@ def _fitted(detector: Any) -> tuple[Any, Any]:
     if detector.torch is None or detector.model is None:
         raise RuntimeError("Detector must be trained before scoring.")
     return detector.torch, detector.model
+
+
+def _score_forecast_run(
+    torch: Any,
+    model: Any,
+    data: np.ndarray,
+    config: TorchTrainingConfig,
+    device: str,
+    *,
+    input_layout: str,
+    absolute: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    score_parts: list[np.ndarray] = []
+    index_parts: list[np.ndarray] = []
+    for x, y, target_indices in forecast_window_batches(
+        data,
+        window=config.window,
+        stride=config.score_stride,
+        batch_size=config.score_batch_size,
+    ):
+        score_parts.append(
+            _score_forecast_model(
+                torch,
+                model,
+                x,
+                y,
+                config,
+                device,
+                input_layout=input_layout,
+                absolute=absolute,
+            )
+        )
+        index_parts.append(target_indices)
+    if not index_parts:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.int64)
+    return np.concatenate(score_parts), np.concatenate(index_parts)
+
+
+def _score_window_run(
+    torch: Any,
+    model: Any,
+    data: np.ndarray,
+    config: TorchTrainingConfig,
+    device: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    score_parts: list[np.ndarray] = []
+    index_parts: list[np.ndarray] = []
+    for x, end_indices in window_end_batches(
+        data,
+        window=config.window,
+        stride=config.score_stride,
+        batch_size=config.score_batch_size,
+    ):
+        score_parts.append(_score_window_model(torch, model, x, config, device))
+        index_parts.append(end_indices)
+    if not index_parts:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.int64)
+    return np.concatenate(score_parts), np.concatenate(index_parts)
+
+
+def _selected_explanation_indices(
+    repository: PreparedDatasetRepository,
+    run_id: str,
+    ts_ns: np.ndarray,
+    row_indices: np.ndarray,
+    scores: np.ndarray,
+    config: TorchTrainingConfig,
+) -> np.ndarray:
+    if len(row_indices) == 0:
+        return row_indices.astype(np.int64)
+    selected = np.zeros(len(row_indices), dtype=bool)
+    timestamps = ts_ns[row_indices]
+    read_events = getattr(repository, "read_events", None)
+    events = read_events() if callable(read_events) else []
+    for event in events:
+        if getattr(event, "run_id", None) != run_id:
+            continue
+        selected |= (timestamps >= int(event.start_ts_ns)) & (timestamps < int(event.end_ts_ns))
+
+    if len(scores) == len(row_indices) and len(scores) > 0:
+        finite_scores = np.asarray(scores, dtype=np.float64)
+        if np.isfinite(finite_scores).any():
+            threshold = float(np.nanquantile(finite_scores, config.explanation_score_quantile))
+            background = np.flatnonzero(finite_scores >= threshold)
+            if len(background) > config.explanation_max_background_windows:
+                ranked = np.argsort(-finite_scores[background], kind="stable")
+                background = background[ranked[: config.explanation_max_background_windows]]
+            selected[background] = True
+
+            if int(selected.sum()) < min(config.explanation_min_windows, len(row_indices)):
+                ranked = np.argsort(-finite_scores, kind="stable")
+                selected[ranked[: min(config.explanation_min_windows, len(row_indices))]] = True
+
+    if not selected.any():
+        selected[: min(config.explanation_min_windows, len(row_indices))] = True
+    return row_indices[np.flatnonzero(selected)].astype(np.int64)
+
+
+def _forecast_target_pool(row_count: int, window: int, stride: int) -> np.ndarray:
+    if row_count <= window:
+        return np.empty(0, dtype=np.int64)
+    return np.arange(window, row_count, stride, dtype=np.int64)
+
+
+def _window_end_pool(row_count: int, window: int, stride: int) -> np.ndarray:
+    if row_count < window:
+        return np.empty(0, dtype=np.int64)
+    return np.arange(window - 1, row_count, stride, dtype=np.int64)
+
+
+def _concat_explanation_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return _empty_explanation_frame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def _forecast_training_matrices(
@@ -914,34 +1114,28 @@ def _ranked_explanation_frame(
     top_k: int,
 ) -> pd.DataFrame:
     top_count = min(top_k, len(features))
-    rows: list[dict[str, Any]] = []
-    for row_index, target_index in enumerate(target_indices):
-        ranked = np.argsort(-importances[row_index])[:top_count]
-        target = int(target_index)
-        window_start = max(target - window + 1, 0)
-        for rank, feature_index in enumerate(ranked, start=1):
-            rows.append(
-                {
-                    "ts_ns": int(ts_ns[target]),
-                    "variable": features[int(feature_index)],
-                    "importance": float(max(importances[row_index, int(feature_index)], 0.0)),
-                    "rank": int(rank),
-                    "method": method,
-                    "window_start_ts_ns": int(ts_ns[window_start]),
-                    "window_end_ts_ns": int(ts_ns[target]),
-                }
-            )
+    if top_count <= 0 or len(target_indices) == 0:
+        return _empty_explanation_frame()
+
+    positive_importances = np.maximum(importances, 0.0)
+    ranked = np.argsort(-positive_importances, axis=1)[:, :top_count]
+    row_positions = np.repeat(np.arange(len(target_indices), dtype=np.int64), top_count)
+    feature_indices = ranked.reshape(-1)
+    targets = np.repeat(target_indices.astype(np.int64), top_count)
+    window_starts = np.maximum(targets - window + 1, 0)
+    ranks = np.tile(np.arange(1, top_count + 1, dtype=np.int64), len(target_indices))
+    feature_names = np.asarray(features, dtype=object)[feature_indices]
+    importance_values = positive_importances[row_positions, feature_indices].astype(np.float64)
     return pd.DataFrame(
-        rows,
-        columns=[
-            "ts_ns",
-            "variable",
-            "importance",
-            "rank",
-            "method",
-            "window_start_ts_ns",
-            "window_end_ts_ns",
-        ],
+        {
+            "ts_ns": ts_ns[targets].astype(np.int64),
+            "variable": feature_names,
+            "importance": importance_values,
+            "rank": ranks,
+            "method": np.full(len(targets), method, dtype=object),
+            "window_start_ts_ns": ts_ns[window_starts].astype(np.int64),
+            "window_end_ts_ns": ts_ns[targets].astype(np.int64),
+        }
     )
 
 

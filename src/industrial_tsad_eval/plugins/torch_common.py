@@ -32,6 +32,9 @@ class TorchTrainingConfig:
     standardize: bool = True
     score_batch_size: int = 512
     explanation_top_k: int = 10
+    explanation_score_quantile: float = 0.995
+    explanation_min_windows: int = 256
+    explanation_max_background_windows: int = 50000
 
     @classmethod
     def from_parameters(cls, parameters: dict[str, Any]) -> TorchTrainingConfig:
@@ -52,6 +55,21 @@ class TorchTrainingConfig:
             score_batch_size=_int_parameter(parameters, "score_batch_size", cls.score_batch_size),
             explanation_top_k=_int_parameter(
                 parameters, "explanation_top_k", cls.explanation_top_k
+            ),
+            explanation_score_quantile=_float_parameter(
+                parameters,
+                "explanation_score_quantile",
+                cls.explanation_score_quantile,
+            ),
+            explanation_min_windows=_int_parameter(
+                parameters,
+                "explanation_min_windows",
+                cls.explanation_min_windows,
+            ),
+            explanation_max_background_windows=_int_parameter(
+                parameters,
+                "explanation_max_background_windows",
+                cls.explanation_max_background_windows,
             ),
         )
         config.validate()
@@ -77,6 +95,12 @@ class TorchTrainingConfig:
             raise ValueError("score_batch_size must be greater than 0.")
         if self.explanation_top_k <= 0:
             raise ValueError("explanation_top_k must be greater than 0.")
+        if not 0.0 < self.explanation_score_quantile < 1.0:
+            raise ValueError("explanation_score_quantile must be in (0, 1).")
+        if self.explanation_min_windows <= 0:
+            raise ValueError("explanation_min_windows must be greater than 0.")
+        if self.explanation_max_background_windows <= 0:
+            raise ValueError("explanation_max_background_windows must be greater than 0.")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to JSON-compatible metadata."""
@@ -93,6 +117,9 @@ class TorchTrainingConfig:
             "standardize": self.standardize,
             "score_batch_size": self.score_batch_size,
             "explanation_top_k": self.explanation_top_k,
+            "explanation_score_quantile": self.explanation_score_quantile,
+            "explanation_min_windows": self.explanation_min_windows,
+            "explanation_max_background_windows": self.explanation_max_background_windows,
         }
 
 
@@ -269,6 +296,40 @@ def forecast_windows(
     return x, y, target_indices.astype(np.int64)
 
 
+def forecast_window_batches(
+    data: np.ndarray,
+    *,
+    window: int,
+    stride: int,
+    batch_size: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Yield next-step forecast windows without materializing the full run."""
+    count = _forecast_window_count(data.shape[0], window, stride)
+    for window_slice in batch_slices(count, batch_size):
+        starts = np.arange(window_slice.start, window_slice.stop, dtype=np.int64) * stride
+        target_indices = starts + window
+        x = np.stack([data[start : start + window] for start in starts]).astype(np.float32)
+        y = data[target_indices].astype(np.float32)
+        yield x, y, target_indices.astype(np.int64)
+
+
+def forecast_window_batches_at(
+    data: np.ndarray,
+    target_indices: np.ndarray,
+    *,
+    window: int,
+    batch_size: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Yield forecast windows for selected target row indices."""
+    selected = _valid_forecast_targets(target_indices, data.shape[0], window)
+    for window_slice in batch_slices(len(selected), batch_size):
+        batch_targets = selected[window_slice]
+        starts = batch_targets - window
+        x = np.stack([data[start : start + window] for start in starts]).astype(np.float32)
+        y = data[batch_targets].astype(np.float32)
+        yield x, y, batch_targets.astype(np.int64)
+
+
 def window_end_windows(
     data: np.ndarray,
     *,
@@ -286,6 +347,38 @@ def window_end_windows(
     x = np.stack([data[start : start + window] for start in starts]).astype(np.float32)
     end_indices = (starts + window - 1).astype(np.int64)
     return x, end_indices
+
+
+def window_end_batches(
+    data: np.ndarray,
+    *,
+    window: int,
+    stride: int,
+    batch_size: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield reconstruction windows without materializing the full run."""
+    count = _window_end_count(data.shape[0], window, stride)
+    for window_slice in batch_slices(count, batch_size):
+        starts = np.arange(window_slice.start, window_slice.stop, dtype=np.int64) * stride
+        x = np.stack([data[start : start + window] for start in starts]).astype(np.float32)
+        end_indices = starts + window - 1
+        yield x, end_indices.astype(np.int64)
+
+
+def window_end_batches_at(
+    data: np.ndarray,
+    end_indices: np.ndarray,
+    *,
+    window: int,
+    batch_size: int,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield reconstruction windows for selected window-end row indices."""
+    selected = _valid_window_ends(end_indices, data.shape[0], window)
+    for window_slice in batch_slices(len(selected), batch_size):
+        batch_ends = selected[window_slice]
+        starts = batch_ends - window + 1
+        x = np.stack([data[start : start + window] for start in starts]).astype(np.float32)
+        yield x, batch_ends.astype(np.int64)
 
 
 def cap_aligned_arrays(
@@ -329,6 +422,38 @@ def batch_slices(count: int, batch_size: int) -> Iterator[slice]:
     """Yield contiguous inference/training batch slices."""
     for start in range(0, count, batch_size):
         yield slice(start, min(start + batch_size, count))
+
+
+def _forecast_window_count(row_count: int, window: int, stride: int) -> int:
+    if row_count <= window:
+        return 0
+    return ((row_count - window - 1) // stride) + 1
+
+
+def _window_end_count(row_count: int, window: int, stride: int) -> int:
+    if row_count < window:
+        return 0
+    return ((row_count - window) // stride) + 1
+
+
+def _valid_forecast_targets(
+    target_indices: np.ndarray,
+    row_count: int,
+    window: int,
+) -> np.ndarray:
+    selected = np.asarray(target_indices, dtype=np.int64)
+    selected = np.unique(selected[(selected >= window) & (selected < row_count)])
+    return selected.astype(np.int64)
+
+
+def _valid_window_ends(
+    end_indices: np.ndarray,
+    row_count: int,
+    window: int,
+) -> np.ndarray:
+    selected = np.asarray(end_indices, dtype=np.int64)
+    selected = np.unique(selected[(selected >= window - 1) & (selected < row_count)])
+    return selected.astype(np.int64)
 
 
 def _xpu_available(torch: Any) -> bool:

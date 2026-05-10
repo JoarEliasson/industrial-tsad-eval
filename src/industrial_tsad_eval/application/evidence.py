@@ -161,13 +161,14 @@ class GenerateEvidence:
         score_repository = LocalScoreRepository(self.scores)
         explanation_repository = LocalExplanationRepository(self.scores / "explanations")
         features = _feature_columns(prepared_repository)
-        baseline = _RobustBaseline.fit(prepared_repository, self.protocol, features)
         source_events = self._source_events(prepared_repository)[: self.max_events]
+        native_cache: dict[str, Any] = {}
+        baseline_cache: dict[str, _RobustBaseline] = {}
         bundles = [
             _build_bundle(
                 prepared_repository=prepared_repository,
                 score_repository=score_repository,
-                baseline=baseline,
+                baseline_cache=baseline_cache,
                 explanation_repository=explanation_repository,
                 explanation_source=self.explanation_source,
                 source_event=source_event,
@@ -175,6 +176,8 @@ class GenerateEvidence:
                 protocol=self.protocol,
                 scores_dir=self.scores,
                 eval_dir=self.eval_dir,
+                features=features,
+                native_cache=native_cache,
             )
             for source_event in source_events
         ]
@@ -307,7 +310,7 @@ def _build_bundle(
     *,
     prepared_repository: LocalPreparedDatasetRepository,
     score_repository: LocalScoreRepository,
-    baseline: _RobustBaseline,
+    baseline_cache: dict[str, _RobustBaseline],
     explanation_repository: LocalExplanationRepository,
     explanation_source: str,
     source_event: _SourceEvent,
@@ -315,24 +318,15 @@ def _build_bundle(
     protocol: str,
     scores_dir: Path,
     eval_dir: Path | None,
+    features: list[str],
+    native_cache: dict[str, Any],
 ) -> EvidenceBundle:
-    frame = prepared_repository.read_run(source_event.run_id)
-    ts_ns = frame["ts_ns"].to_numpy(dtype=np.int64)
-    event_mask = (ts_ns >= source_event.start_ts_ns) & (ts_ns < source_event.end_ts_ns)
-    if not np.any(event_mask):
-        nearest = int(np.searchsorted(ts_ns, source_event.start_ts_ns, side="left"))
-        nearest = min(max(nearest, 0), max(len(ts_ns) - 1, 0))
-        event_mask = np.zeros(len(ts_ns), dtype=bool)
-        if len(ts_ns):
-            event_mask[nearest] = True
-    values = frame.reindex(columns=baseline.features, fill_value=0.0).to_numpy(dtype=np.float64)
-    event_values = values[event_mask]
-    event_ts = ts_ns[event_mask]
     native = _native_explanation(
         explanation_repository,
         source_event,
         top_k,
         explanation_source,
+        native_cache,
     )
     if native is not None:
         top_variables, top_time_windows, local_rankings, native_provenance = native
@@ -359,6 +353,19 @@ def _build_bundle(
             },
         )
 
+    baseline = _cached_baseline(baseline_cache, prepared_repository, protocol, features)
+    frame = prepared_repository.read_run(source_event.run_id)
+    ts_ns = frame["ts_ns"].to_numpy(dtype=np.int64)
+    event_mask = (ts_ns >= source_event.start_ts_ns) & (ts_ns < source_event.end_ts_ns)
+    if not np.any(event_mask):
+        nearest = int(np.searchsorted(ts_ns, source_event.start_ts_ns, side="left"))
+        nearest = min(max(nearest, 0), max(len(ts_ns) - 1, 0))
+        event_mask = np.zeros(len(ts_ns), dtype=bool)
+        if len(ts_ns):
+            event_mask[nearest] = True
+    values = frame.reindex(columns=baseline.features, fill_value=0.0).to_numpy(dtype=np.float64)
+    event_values = values[event_mask]
+    event_ts = ts_ns[event_mask]
     z_scores = np.abs((event_values - baseline.median) / baseline.scale)
     variable_importance = (
         z_scores.mean(axis=0) if len(z_scores) else np.zeros(len(baseline.features))
@@ -410,6 +417,7 @@ def _native_explanation(
     source_event: _SourceEvent,
     top_k: int,
     explanation_source: str,
+    native_cache: dict[str, Any],
 ) -> (
     tuple[
         list[EvidenceVariable],
@@ -422,7 +430,10 @@ def _native_explanation(
     if explanation_source == "robust":
         return None
     try:
-        explanations = repository.read_run_explanations(source_event.run_id)
+        explanations = native_cache.get(source_event.run_id)
+        if explanations is None:
+            explanations = repository.read_run_explanations(source_event.run_id)
+            native_cache[source_event.run_id] = explanations
     except FileNotFoundError:
         if explanation_source == "native":
             raise EvidenceError(
@@ -483,6 +494,19 @@ def _native_explanation(
             "explanations_dir": str(repository.root),
         },
     )
+
+
+def _cached_baseline(
+    baseline_cache: dict[str, _RobustBaseline],
+    repository: LocalPreparedDatasetRepository,
+    protocol: str,
+    features: list[str],
+) -> _RobustBaseline:
+    baseline = baseline_cache.get("baseline")
+    if baseline is None:
+        baseline = _RobustBaseline.fit(repository, protocol, features)
+        baseline_cache["baseline"] = baseline
+    return baseline
 
 
 def _native_time_windows(
