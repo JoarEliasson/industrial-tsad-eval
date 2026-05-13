@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -21,16 +22,18 @@ class LocalProgressSink:
         self.snapshot_path = self.root / "progress_snapshot.json"
         self.items: dict[str, dict[str, Any]] = {}
         self.latest_event: dict[str, Any] | None = None
+        self._lock = threading.Lock()
 
     def emit(self, event: ProgressEvent) -> None:
         """Append one event and update the run snapshot."""
         payload = event.to_dict()
-        self.events_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, sort_keys=True) + "\n")
-        self.items[event.key] = payload
-        self.latest_event = payload
-        write_json(self.snapshot_path, progress_snapshot(self.run_id, self.items, payload))
+        with self._lock:
+            self.events_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.events_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, sort_keys=True) + "\n")
+            self.items[event.key] = payload
+            self.latest_event = payload
+            write_json(self.snapshot_path, progress_snapshot(self.run_id, self.items, payload))
 
 
 def progress_snapshot(

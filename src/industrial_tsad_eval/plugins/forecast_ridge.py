@@ -129,6 +129,11 @@ class ForecastRidgePlugin:
         """Return the registry name."""
         return "forecast-ridge"
 
+    @property
+    def requires_torch(self) -> bool:
+        """Return whether this plugin requires torch."""
+        return False
+
     def create(self, config: DetectorRunConfig) -> Detector:
         """Create an unfitted ForecastRidge detector."""
         params = dict(config.parameters)

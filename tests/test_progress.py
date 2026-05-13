@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from industrial_tsad_eval.application.benchmark import RunBenchmark
+from industrial_tsad_eval.application.reproduction import DiagnoseThesisReproduction
 from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
     BenchmarkDatasetConfig,
@@ -139,3 +140,43 @@ def test_thesis_full_profile_lists_current_draft_detector_plugins(tmp_path: Path
     detector_names = [detector.name for detector in config.benchmark.detectors]
 
     assert detector_names == ["forecast-ridge", "dra", "interfusion", "drcad"]
+    assert config.profile_experiment_limit == 0
+    assert config.resources.profile_mode == "inline"
+    assert config.resources.benchmark_workers == "auto"
+    assert config.resources.memory_limit_gb == 16
+
+
+def test_reproduction_diagnostics_group_native_evidence_failures(tmp_path: Path):
+    run = tmp_path / "run"
+    (run / "benchmark").mkdir(parents=True)
+    (run / "benchmark" / "summary.json").write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "experiments": [
+                    {"experiment_id": "a", "status": "completed"},
+                    {"experiment_id": "b", "status": "completed"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = [
+        {
+            "run_id": "run",
+            "stage": "evidence",
+            "item_id": "a:operational",
+            "status": "failed",
+            "error": "EvidenceError: Native explanation artifacts contain no rows inside event.",
+        }
+    ]
+    (run / "progress.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in events),
+        encoding="utf-8",
+    )
+
+    report = DiagnoseThesisReproduction(run).run_diagnostics()
+
+    assert report["classification"] == "downstream_operational_native_evidence_coverage"
+    assert report["failures_by_error"] == {"native_explanation_missing_event_overlap": 1}
+    assert (run / "diagnostics" / "failure_report.md").exists()

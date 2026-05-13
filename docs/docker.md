@@ -11,10 +11,10 @@ The Compose service sets:
 - container memory: `16g`
 - container memory plus swap: `16g`
 - shared memory: `1g`
-- `OMP_NUM_THREADS=8`
-- `MKL_NUM_THREADS=8`
-- `OPENBLAS_NUM_THREADS=8`
-- `NUMEXPR_NUM_THREADS=8`
+- `OMP_NUM_THREADS=12`
+- `MKL_NUM_THREADS=12`
+- `OPENBLAS_NUM_THREADS=12`
+- `NUMEXPR_NUM_THREADS=12`
 
 On Windows, Docker Desktop also needs its resource limit set to 16 GB. Compose
 cannot raise the memory available to Docker Desktop if the desktop limit is
@@ -125,6 +125,11 @@ temperature = 0.0
 top_p = 1.0
 max_tokens = 700
 seed = 1337
+
+[assistant.provider.extra]
+structured_output_mode = "json_object"
+gpu_offload_required = true
+gpu_layers = -1
 ```
 
 `host.docker.internal` is available by default on Docker Desktop. The compose
@@ -175,10 +180,10 @@ Record the intended execution budget alongside the run:
   "container_memory_gb": 16,
   "container_swap_gb": 16,
   "thread_caps": {
-    "OMP_NUM_THREADS": 8,
-    "MKL_NUM_THREADS": 8,
-    "OPENBLAS_NUM_THREADS": 8,
-    "NUMEXPR_NUM_THREADS": 8
+    "OMP_NUM_THREADS": 12,
+    "MKL_NUM_THREADS": 12,
+    "OPENBLAS_NUM_THREADS": 12,
+    "NUMEXPR_NUM_THREADS": 12
   },
   "docker_gpu_mode": "auto",
   "llama_base_url": "http://host.docker.internal:8080/v1",

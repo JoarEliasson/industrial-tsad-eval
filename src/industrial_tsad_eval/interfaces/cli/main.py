@@ -46,6 +46,7 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluateConfig,
 )
 from industrial_tsad_eval.application.reproduction import (
+    DiagnoseThesisReproduction,
     PlanThesisReproduction,
     PreflightThesisReproduction,
     RunThesisReproduction,
@@ -631,6 +632,14 @@ def evidence_generate(
     protocol: str = typer.Option("naive", "--protocol", help="Split protocol."),
     top_k: int = typer.Option(5, "--top-k", min=1, help="Number of top variables."),
     max_events: int = typer.Option(100, "--max-events", min=1, help="Maximum events."),
+    explanation_source: str = typer.Option(
+        "auto", "--explanation-source", help="Explanation source: auto, native, or robust."
+    ),
+    native_missing_policy: str = typer.Option(
+        "skip_bundle",
+        "--native-missing-policy",
+        help="Policy when native rows do not overlap an event: skip_bundle, fallback_robust, fail.",
+    ),
 ) -> None:
     """Generate detector-agnostic Evidence Bundle v1 artifacts."""
     try:
@@ -643,6 +652,8 @@ def evidence_generate(
             protocol=protocol,
             top_k=top_k,
             max_events=max_events,
+            explanation_source=explanation_source,
+            native_missing_policy=native_missing_policy,
         ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
@@ -925,6 +936,7 @@ def reproduce_preflight(
         result = PreflightThesisReproduction(
             config=loaded,
             provider_registry=default_llm_provider_registry(),
+            detector_registry=default_detector_registry(),
         ).run()
         write_json(out / "preflight.json", result)
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
@@ -978,6 +990,18 @@ def reproduce_summarize(
     """Print a thesis reproduction summary."""
     try:
         payload = SummarizeThesisReproduction(run).run_summary()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=payload)
+
+
+@reproduce_app.command("diagnose")
+def reproduce_diagnose(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="Reproduction run directory."),
+) -> None:
+    """Group failures and slow-stage diagnostics for a reproduction run."""
+    try:
+        payload = DiagnoseThesisReproduction(run).run_diagnostics()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
     console.print_json(data=payload)

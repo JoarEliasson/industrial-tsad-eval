@@ -7,6 +7,7 @@ from threading import Thread
 
 from typer.testing import CliRunner
 
+from industrial_tsad_eval.application import reproduction as reproduction_module
 from industrial_tsad_eval.application.assistant_replay import (
     RunAssistantReplaySuite,
     _claims_from_draft,
@@ -14,6 +15,7 @@ from industrial_tsad_eval.application.assistant_replay import (
 )
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.evidence import GenerateEvidence
+from industrial_tsad_eval.application.reproduction import PreflightThesisReproduction
 from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.domain.assistant_replay import (
     THESIS_ASSISTANT_QUERY_TEMPLATE,
@@ -463,7 +465,11 @@ def test_thesis_full_profile_matches_current_draft_parameters(tmp_path: Path):
 
     assert config.evidence_sources == ["oracle", "operational"]
     assert config.assistant_evidence_source == "operational"
-    assert config.profile_experiment_limit is None
+    assert config.profile_experiment_limit == 0
+    assert config.resources.profile_mode == "inline"
+    assert config.resources.cpu_threads == 12
+    assert config.resources.require_cuda_for_torch is True
+    assert config.resources.require_llama_gpu is True
     assert [detector.id for detector in config.benchmark.detectors] == [
         "forecast-ridge",
         "dra",
@@ -482,6 +488,69 @@ def test_thesis_full_profile_matches_current_draft_parameters(tmp_path: Path):
     )
     assert experiments["HAI-CPPS__drcad__zero_shot"].detector.parameters["patch_size"] == 5
     assert experiments["HAI-CPPS__drcad__zero_shot"].detector.parameters["lr"] == 0.0001
+
+
+def test_reproduction_preflight_short_circuits_required_resource_failures(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config_path = tmp_path / "full.toml"
+    write_default_reproduction_config(config_path, profile="thesis-full")
+    config = load_reproduction_config(config_path)
+
+    class _Runtime:
+        ready = False
+        resolved_device = "cpu"
+
+        def to_dict(self) -> dict[str, object]:
+            return {"ready": False, "resolved_device": "cpu"}
+
+    def _fail_validation(*args, **kwargs):
+        raise AssertionError("prepared validation should not run after resource failure")
+
+    monkeypatch.setattr(reproduction_module, "probe_torch_runtime", lambda _device: _Runtime())
+    monkeypatch.setattr(reproduction_module.ValidatePreparedDataset, "run", _fail_validation)
+
+    result = PreflightThesisReproduction(
+        config=config,
+        provider_registry=default_llm_provider_registry(),
+        detector_registry=default_detector_registry(),
+    ).run()
+
+    assert result["ok"] is False
+    assert result["short_circuited"] is True
+    assert result["checks"][0]["name"] == "resources:torch-cuda"
+    assert result["checks"][0]["status"] == "fail"
+
+
+def test_llama_gpu_offload_accepts_docker_desktop_vram_evidence(monkeypatch):
+    class _Completed:
+        def __init__(self, stdout: str):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = 0
+
+    def _run(command, **kwargs):
+        joined = " ".join(command)
+        if "--query-compute-apps=pid,process_name,used_memory" in joined:
+            return _Completed("1, [Not Found], [N/A]\n")
+        if "--query-gpu=name,memory.used,memory.total,utilization.gpu" in joined:
+            return _Completed("NVIDIA GeForce RTX 3060 Laptop GPU, 4117, 6144, 0\n")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(reproduction_module.subprocess, "run", _run)
+    monkeypatch.setattr(
+        reproduction_module,
+        "_llama_endpoint_status",
+        lambda _base_url: {"endpoint_ready": True, "endpoint_status_code": 200},
+    )
+
+    details = reproduction_module._llama_gpu_offload_details("http://host.docker.internal:8080/v1")
+
+    assert details["endpoint_ready"] is True
+    assert details["active_llama_like_process"] is False
+    assert details["gpu_memory_offload_evidence"] is True
+    assert details["gpu"]["memory_used_mb"] == 4117
 
 
 def test_thesis_full_profile_matches_current_draft_scoring_policy(tmp_path: Path):

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 import io
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +84,8 @@ class RunBenchmark:
         run_id: str | None = None,
         source_config: str | Path | None = None,
         progress_sink: ProgressSink | None = None,
+        worker_count: int = 1,
+        gpu_slots: int = 1,
     ):
         self.config = config
         self.detector_registry = detector_registry
@@ -89,6 +93,8 @@ class RunBenchmark:
         self.run_id = run_id or _default_run_id(config.name)
         self.source_config = Path(source_config) if source_config is not None else None
         self.progress_sink = progress_sink
+        self.worker_count = max(int(worker_count), 1)
+        self.gpu_slots = max(int(gpu_slots), 0)
 
     def run(self) -> BenchmarkRunResult:
         """Execute the benchmark matrix and write run artifacts."""
@@ -129,36 +135,7 @@ class RunBenchmark:
                     path=str(run_root / "experiments" / experiment.experiment_id),
                 )
             )
-        for ordinal, experiment in enumerate(experiments, start=1):
-            started = time.perf_counter()
-            progress.emit(
-                ProgressEvent(
-                    run_id=self.run_id,
-                    stage="benchmark",
-                    item_id=experiment.experiment_id,
-                    status="running",
-                    ordinal=ordinal,
-                    total=len(experiments),
-                    path=str(run_root / "experiments" / experiment.experiment_id),
-                    message=f"{experiment.dataset.id}/{experiment.detector.id}/{experiment.protocol}",
-                )
-            )
-            result = self._run_experiment(run_root, experiment, validation_errors)
-            results.append(result)
-            progress.emit(
-                ProgressEvent(
-                    run_id=self.run_id,
-                    stage="benchmark",
-                    item_id=experiment.experiment_id,
-                    status="completed" if result.status == "completed" else "failed",
-                    ordinal=ordinal,
-                    total=len(experiments),
-                    path=str(run_root / "experiments" / experiment.experiment_id),
-                    duration_s=round(time.perf_counter() - started, 6),
-                    metrics=_progress_metrics(result),
-                    error=result.error,
-                )
-            )
+        results = self._run_experiments(run_root, experiments, validation_errors, progress)
 
         ok = all(result.status == "completed" for result in results)
         rows = [summary_row(result) for result in results]
@@ -191,6 +168,105 @@ class RunBenchmark:
             ok=ok,
             results=results,
         )
+
+    def _run_experiments(
+        self,
+        run_root: Path,
+        experiments: list[BenchmarkExperiment],
+        validation_errors: dict[str, list[str]],
+        progress: ProgressSink,
+    ) -> list[BenchmarkExperimentResult]:
+        if self.worker_count == 1 or len(experiments) <= 1:
+            return [
+                self._run_experiment_with_progress(
+                    run_root,
+                    experiment,
+                    validation_errors,
+                    progress,
+                    ordinal,
+                    len(experiments),
+                )
+                for ordinal, experiment in enumerate(experiments, start=1)
+            ]
+
+        gpu_semaphore = threading.Semaphore(self.gpu_slots or 1)
+        ordered: list[BenchmarkExperimentResult | None] = [None] * len(experiments)
+        with ThreadPoolExecutor(max_workers=min(self.worker_count, len(experiments))) as executor:
+            future_to_index = {
+                executor.submit(
+                    self._run_experiment_with_resource_guard,
+                    run_root,
+                    experiment,
+                    validation_errors,
+                    progress,
+                    ordinal,
+                    len(experiments),
+                    gpu_semaphore,
+                ): ordinal - 1
+                for ordinal, experiment in enumerate(experiments, start=1)
+            }
+            for future in as_completed(future_to_index):
+                ordered[future_to_index[future]] = future.result()
+        return [result for result in ordered if result is not None]
+
+    def _run_experiment_with_resource_guard(
+        self,
+        run_root: Path,
+        experiment: BenchmarkExperiment,
+        validation_errors: dict[str, list[str]],
+        progress: ProgressSink,
+        ordinal: int,
+        total: int,
+        gpu_semaphore: threading.Semaphore,
+    ) -> BenchmarkExperimentResult:
+        plugin = self.detector_registry.get(experiment.detector.name)
+        if getattr(plugin, "requires_torch", False):
+            with gpu_semaphore:
+                return self._run_experiment_with_progress(
+                    run_root, experiment, validation_errors, progress, ordinal, total
+                )
+        return self._run_experiment_with_progress(
+            run_root, experiment, validation_errors, progress, ordinal, total
+        )
+
+    def _run_experiment_with_progress(
+        self,
+        run_root: Path,
+        experiment: BenchmarkExperiment,
+        validation_errors: dict[str, list[str]],
+        progress: ProgressSink,
+        ordinal: int,
+        total: int,
+    ) -> BenchmarkExperimentResult:
+        started = time.perf_counter()
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="benchmark",
+                item_id=experiment.experiment_id,
+                status="running",
+                ordinal=ordinal,
+                total=total,
+                path=str(run_root / "experiments" / experiment.experiment_id),
+                message=f"{experiment.dataset.id}/{experiment.detector.id}/{experiment.protocol}",
+            )
+        )
+        result = self._run_experiment(run_root, experiment, validation_errors)
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="benchmark",
+                item_id=experiment.experiment_id,
+                status="completed" if result.status == "completed" else "failed",
+                ordinal=ordinal,
+                total=total,
+                path=str(run_root / "experiments" / experiment.experiment_id),
+                duration_s=round(time.perf_counter() - started, 6),
+                metrics=_progress_metrics(result),
+                error=result.error,
+            )
+        )
+        return result
 
     def _run_experiment(
         self,

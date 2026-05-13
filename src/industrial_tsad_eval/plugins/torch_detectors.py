@@ -640,6 +640,11 @@ class ForecastLSTMPlugin:
         """Return the registry name."""
         return "forecast-lstm"
 
+    @property
+    def requires_torch(self) -> bool:
+        """Return whether this plugin requires torch."""
+        return True
+
     def create(self, config: DetectorRunConfig) -> Detector:
         """Create an unfitted ForecastLSTM detector."""
         return ForecastLSTMDetector(ForecastLSTMConfig.from_parameters(config.parameters))
@@ -652,6 +657,11 @@ class DRAPlugin:
     def name(self) -> str:
         """Return the registry name."""
         return "dra"
+
+    @property
+    def requires_torch(self) -> bool:
+        """Return whether this plugin requires torch."""
+        return True
 
     def create(self, config: DetectorRunConfig) -> Detector:
         """Create an unfitted DRA detector."""
@@ -666,6 +676,11 @@ class InterFusionPlugin:
         """Return the registry name."""
         return "interfusion"
 
+    @property
+    def requires_torch(self) -> bool:
+        """Return whether this plugin requires torch."""
+        return True
+
     def create(self, config: DetectorRunConfig) -> Detector:
         """Create an unfitted InterFusion detector."""
         return InterFusionDetector(InterFusionConfig.from_parameters(config.parameters))
@@ -678,6 +693,11 @@ class DRCADPlugin:
     def name(self) -> str:
         """Return the registry name."""
         return "drcad"
+
+    @property
+    def requires_torch(self) -> bool:
+        """Return whether this plugin requires torch."""
+        return True
 
     def create(self, config: DetectorRunConfig) -> Detector:
         """Create an unfitted DRCAD detector."""

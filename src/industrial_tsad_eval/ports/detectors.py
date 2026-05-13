@@ -44,5 +44,9 @@ class DetectorPlugin(Protocol):
     def name(self) -> str:
         """Return the stable plugin name."""
 
+    @property
+    def requires_torch(self) -> bool:
+        """Return whether this detector requires torch runtime support."""
+
     def create(self, config: DetectorRunConfig) -> Detector:
         """Create an unfitted detector instance."""

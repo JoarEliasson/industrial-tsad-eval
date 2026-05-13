@@ -133,6 +133,7 @@ class GenerateEvidence:
         top_k: int = 5,
         max_events: int = 100,
         explanation_source: str = "auto",
+        native_missing_policy: str = "skip_bundle",
     ):
         self.prepared = Path(prepared)
         self.scores = Path(scores)
@@ -143,6 +144,7 @@ class GenerateEvidence:
         self.top_k = top_k
         self.max_events = max_events
         self.explanation_source = _explanation_source(explanation_source)
+        self.native_missing_policy = _native_missing_policy(native_missing_policy)
 
     def run(self) -> GenerateEvidenceResult:
         """Generate bundles and write evidence artifacts."""
@@ -171,6 +173,7 @@ class GenerateEvidence:
                 baseline_cache=baseline_cache,
                 explanation_repository=explanation_repository,
                 explanation_source=self.explanation_source,
+                native_missing_policy=self.native_missing_policy,
                 source_event=source_event,
                 top_k=self.top_k,
                 protocol=self.protocol,
@@ -313,6 +316,7 @@ def _build_bundle(
     baseline_cache: dict[str, _RobustBaseline],
     explanation_repository: LocalExplanationRepository,
     explanation_source: str,
+    native_missing_policy: str,
     source_event: _SourceEvent,
     top_k: int,
     protocol: str,
@@ -326,6 +330,7 @@ def _build_bundle(
         source_event,
         top_k,
         explanation_source,
+        native_missing_policy,
         native_cache,
     )
     if native is not None:
@@ -417,6 +422,7 @@ def _native_explanation(
     source_event: _SourceEvent,
     top_k: int,
     explanation_source: str,
+    native_missing_policy: str,
     native_cache: dict[str, Any],
 ) -> (
     tuple[
@@ -441,16 +447,17 @@ def _native_explanation(
                 f"{source_event.run_id!r}."
             ) from None
         return None
-    window = explanations.loc[
-        (explanations["ts_ns"] >= source_event.start_ts_ns)
-        & (explanations["ts_ns"] < source_event.end_ts_ns)
-    ].copy()
+    window = _native_event_rows(explanations, source_event)
     if window.empty:
-        if explanation_source == "native":
+        if explanation_source == "native" and native_missing_policy == "fail":
             raise EvidenceError(
-                f"Native explanation artifacts contain no rows inside event "
+                f"Native explanation artifacts contain no rows overlapping event "
                 f"{source_event.event_id!r}."
             )
+        if explanation_source == "native" and native_missing_policy == "fallback_robust":
+            return None
+        if explanation_source == "native":
+            return _skipped_native_explanation(repository, source_event)
         return None
 
     method = str(window["method"].iloc[0]) if "method" in window.columns else "native"
@@ -492,6 +499,51 @@ def _native_explanation(
             "explainer_method": method,
             "fallback_from_native": False,
             "explanations_dir": str(repository.root),
+            "coverage_status": "native_event_overlap",
+        },
+    )
+
+
+def _native_event_rows(explanations: Any, source_event: _SourceEvent) -> Any:
+    point_mask = (explanations["ts_ns"] >= source_event.start_ts_ns) & (
+        explanations["ts_ns"] < source_event.end_ts_ns
+    )
+    if "window_start_ts_ns" in explanations.columns and "window_end_ts_ns" in explanations.columns:
+        window_mask = (explanations["window_start_ts_ns"] < source_event.end_ts_ns) & (
+            explanations["window_end_ts_ns"] > source_event.start_ts_ns
+        )
+        return explanations.loc[point_mask | window_mask].copy()
+    return explanations.loc[point_mask].copy()
+
+
+def _skipped_native_explanation(
+    repository: LocalExplanationRepository,
+    source_event: _SourceEvent,
+) -> tuple[
+    list[EvidenceVariable],
+    list[EvidenceTimeWindow],
+    list[dict[str, Any]],
+    dict[str, Any],
+]:
+    return (
+        [],
+        [
+            EvidenceTimeWindow(
+                start_ts_ns=source_event.start_ts_ns,
+                end_ts_ns=source_event.end_ts_ns,
+                rank=1,
+                importance=0.0,
+            )
+        ],
+        [],
+        {
+            "generator": "native-explanation-v1",
+            "explanation_source": "native",
+            "explainer_method": None,
+            "fallback_from_native": False,
+            "explanations_dir": str(repository.root),
+            "coverage_status": "skipped_no_native_overlap",
+            "skip_reason": "native_explanation_missing_event_overlap",
         },
     )
 
@@ -737,4 +789,13 @@ def _explanation_source(value: str) -> str:
     normalized = value.strip().lower()
     if normalized not in {"auto", "native", "robust"}:
         raise ValueError("explanation_source must be one of: auto, native, robust.")
+    return normalized
+
+
+def _native_missing_policy(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in {"skip_bundle", "fallback_robust", "fail"}:
+        raise ValueError(
+            "native_missing_policy must be one of: skip_bundle, fallback_robust, fail."
+        )
     return normalized

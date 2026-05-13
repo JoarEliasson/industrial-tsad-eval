@@ -163,6 +163,135 @@ def test_native_explanation_artifacts_drive_evidence_generation(
     assert bundle.provenance["explainer_method"] == "unit-native"
 
 
+def test_native_explanation_window_overlap_drives_evidence_generation(
+    opcua_prepared: Path,
+    tmp_path: Path,
+):
+    scores, _eval_dir = _score_and_eval(opcua_prepared, tmp_path)
+    event = json.loads(
+        (opcua_prepared / "events" / "events.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    first_tag = json.loads((opcua_prepared / "meta" / "schema.json").read_text(encoding="utf-8"))[
+        "tags"
+    ][0]["browse_path"]
+    repository = LocalExplanationRepository(scores / "explanations")
+    repository.write_run_explanations(
+        event["run_id"],
+        pd.DataFrame(
+            [
+                {
+                    "ts_ns": event["start_ts_ns"] - 1,
+                    "variable": first_tag,
+                    "importance": 7.0,
+                    "rank": 1,
+                    "method": "unit-native",
+                    "window_start_ts_ns": event["start_ts_ns"] - 10,
+                    "window_end_ts_ns": event["start_ts_ns"] + 10,
+                }
+            ]
+        ),
+    )
+    repository.write_manifest()
+    evidence_dir = tmp_path / "native_overlap_evidence"
+
+    GenerateEvidence(
+        prepared=opcua_prepared,
+        scores=scores,
+        out=evidence_dir,
+        explanation_source="native",
+    ).run()
+    bundle = EvidenceBundle.from_dict(
+        json.loads(next((evidence_dir / "bundles").rglob("evidence.json")).read_text())
+    )
+
+    assert bundle.top_variables[0].variable == first_tag
+    assert bundle.provenance["coverage_status"] == "native_event_overlap"
+
+
+def test_native_explanation_gap_writes_skipped_bundle(opcua_prepared: Path, tmp_path: Path):
+    scores, _eval_dir = _score_and_eval(opcua_prepared, tmp_path)
+    event = json.loads(
+        (opcua_prepared / "events" / "events.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    first_tag = json.loads((opcua_prepared / "meta" / "schema.json").read_text(encoding="utf-8"))[
+        "tags"
+    ][0]["browse_path"]
+    repository = LocalExplanationRepository(scores / "explanations")
+    repository.write_run_explanations(
+        event["run_id"],
+        pd.DataFrame(
+            [
+                {
+                    "ts_ns": event["end_ts_ns"] + 1_000,
+                    "variable": first_tag,
+                    "importance": 7.0,
+                    "rank": 1,
+                    "method": "unit-native",
+                    "window_start_ts_ns": event["end_ts_ns"] + 1_000,
+                    "window_end_ts_ns": event["end_ts_ns"] + 2_000,
+                }
+            ]
+        ),
+    )
+    repository.write_manifest()
+    evidence_dir = tmp_path / "native_gap_evidence"
+
+    GenerateEvidence(
+        prepared=opcua_prepared,
+        scores=scores,
+        out=evidence_dir,
+        explanation_source="native",
+        native_missing_policy="skip_bundle",
+    ).run()
+    bundle = EvidenceBundle.from_dict(
+        json.loads(next((evidence_dir / "bundles").rglob("evidence.json")).read_text())
+    )
+
+    assert bundle.top_variables == []
+    assert bundle.provenance["coverage_status"] == "skipped_no_native_overlap"
+
+
+def test_native_explanation_gap_can_still_fail_strictly(
+    opcua_prepared: Path,
+    tmp_path: Path,
+):
+    scores, _eval_dir = _score_and_eval(opcua_prepared, tmp_path)
+    event = json.loads(
+        (opcua_prepared / "events" / "events.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    repository = LocalExplanationRepository(scores / "explanations")
+    repository.write_run_explanations(
+        event["run_id"],
+        pd.DataFrame(
+            [
+                {
+                    "ts_ns": event["end_ts_ns"] + 1_000,
+                    "variable": "Node/Pressure",
+                    "importance": 7.0,
+                    "rank": 1,
+                    "method": "unit-native",
+                    "window_start_ts_ns": event["end_ts_ns"] + 1_000,
+                    "window_end_ts_ns": event["end_ts_ns"] + 2_000,
+                }
+            ]
+        ),
+    )
+    repository.write_manifest()
+
+    try:
+        GenerateEvidence(
+            prepared=opcua_prepared,
+            scores=scores,
+            out=tmp_path / "native_gap_fail",
+            explanation_source="native",
+            native_missing_policy="fail",
+        ).run()
+    except Exception as exc:
+        assert "no rows overlapping event" in str(exc)
+    else:
+        raise AssertionError("Expected strict native gap policy to fail.")
+
+
 def test_native_explanation_required_fails_when_missing(opcua_prepared: Path, tmp_path: Path):
     scores, _eval_dir = _score_and_eval(opcua_prepared, tmp_path)
 

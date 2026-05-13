@@ -16,7 +16,7 @@ from industrial_tsad_eval.domain.benchmark import (
     BenchmarkDetectorConfig,
     BenchmarkParameterOverride,
 )
-from industrial_tsad_eval.domain.reproduction import ReproductionConfig
+from industrial_tsad_eval.domain.reproduction import ReproductionConfig, ReproductionReuseConfig
 
 try:
     import tomllib
@@ -30,18 +30,20 @@ THESIS_ASSISTANT_QUERY_TOML = THESIS_ASSISTANT_QUERY_TEMPLATE.replace("\\", "\\\
 DRA_THESIS_PARAMS = (
     "{ window = 100, train_stride = 10, score_stride = 1, "
     "max_train_windows = 5000, epochs = 30, batch_size = 64, "
-    'seed = 1337, device = "auto", evidence_explanation_source = "native" }'
+    'seed = 1337, device = "auto", evidence_explanation_source = "native", '
+    'evidence_native_missing_policy = "skip_bundle" }'
 )
 INTERFUSION_THESIS_PARAMS = (
     "{ window = 100, train_stride = 10, score_stride = 1, latent_dim = 3, "
     "kl_warmup = 10, max_train_windows = 5000, epochs = 30, batch_size = 64, "
-    'seed = 1337, device = "auto", evidence_explanation_source = "native" }'
+    'seed = 1337, device = "auto", evidence_explanation_source = "native", '
+    'evidence_native_missing_policy = "skip_bundle" }'
 )
 DRCAD_THESIS_PARAMS = (
     "{ window = 100, train_stride = 10, score_stride = 1, patch_size = 5, "
     "d_model = 64, n_heads = 4, n_layers = 2, mlp_dim = 128, lr = 0.0001, "
     'epochs = 10, batch_size = 64, seed = 1337, device = "auto", '
-    'evidence_explanation_source = "native" }'
+    'evidence_explanation_source = "native", evidence_native_missing_policy = "skip_bundle" }'
 )
 
 THESIS_SMOKE_CONFIG_TOML = """[reproduction]
@@ -54,6 +56,18 @@ xai_ks = [1, 3, 5]
 evidence_sources = ["oracle"]
 assistant_evidence_source = "oracle"
 profile_experiment_limit = 1
+
+[reproduction.resources]
+cpu_threads = 12
+memory_limit_gb = 16
+benchmark_workers = "auto"
+evidence_workers = "auto"
+xai_workers = "auto"
+assistant_workers = "conservative"
+gpu_slots = 1
+profile_mode = "inline"
+require_cuda_for_torch = true
+require_llama_gpu = false
 
 [benchmark]
 name = "thesis-smoke"
@@ -96,6 +110,18 @@ xai_ks = [1, 3, 5]
 evidence_sources = ["oracle"]
 assistant_evidence_source = "oracle"
 profile_experiment_limit = 1
+
+[reproduction.resources]
+cpu_threads = 12
+memory_limit_gb = 16
+benchmark_workers = "auto"
+evidence_workers = "auto"
+xai_workers = "auto"
+assistant_workers = "conservative"
+gpu_slots = 1
+profile_mode = "inline"
+require_cuda_for_torch = true
+require_llama_gpu = true
 
 [benchmark]
 name = "thesis-verification"
@@ -171,6 +197,11 @@ temperature = 0.0
 top_p = 1.0
 max_tokens = 700
 seed = 1337
+
+[assistant.provider.extra]
+structured_output_mode = "json_object"
+gpu_offload_required = true
+gpu_layers = -1
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
 
 
@@ -185,6 +216,18 @@ xai_ks = [1, 3, 5]
 evidence_sources = ["oracle", "operational"]
 assistant_evidence_source = "operational"
 profile_experiment_limit = 0
+
+[reproduction.resources]
+cpu_threads = 12
+memory_limit_gb = 16
+benchmark_workers = "auto"
+evidence_workers = "auto"
+xai_workers = "auto"
+assistant_workers = "conservative"
+gpu_slots = 1
+profile_mode = "inline"
+require_cuda_for_torch = true
+require_llama_gpu = true
 
 [benchmark]
 name = "thesis-full"
@@ -281,6 +324,11 @@ temperature = 0.0
 top_p = 1.0
 max_tokens = 700
 seed = 1337
+
+[assistant.provider.extra]
+structured_output_mode = "json_object"
+gpu_offload_required = true
+gpu_layers = -1
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
     .replace("__DRA_THESIS_PARAMS__", DRA_THESIS_PARAMS)
     .replace("__INTERFUSION_THESIS_PARAMS__", INTERFUSION_THESIS_PARAMS)
@@ -300,6 +348,11 @@ temperature = 0.0
 top_p = 1.0
 max_tokens = 700
 seed = 1337
+
+[assistant.provider.extra]
+structured_output_mode = "json_object"
+gpu_offload_required = true
+gpu_layers = -1
 
 # Cloud examples use env vars only:
 # name = "openai"
@@ -379,6 +432,19 @@ def render_reproduction_config_toml(config: ReproductionConfig) -> str:
             "0" if config.profile_experiment_limit is None else str(config.profile_experiment_limit)
         ),
         "",
+        "[reproduction.resources]",
+        f"cpu_threads = {config.resources.cpu_threads}",
+        f"memory_limit_gb = {config.resources.memory_limit_gb}",
+        "benchmark_workers = " + _worker_toml(config.resources.benchmark_workers),
+        "evidence_workers = " + _worker_toml(config.resources.evidence_workers),
+        "xai_workers = " + _worker_toml(config.resources.xai_workers),
+        "assistant_workers = " + _worker_toml(config.resources.assistant_workers),
+        f"gpu_slots = {config.resources.gpu_slots}",
+        f'profile_mode = "{config.resources.profile_mode}"',
+        f"require_cuda_for_torch = {_bool(config.resources.require_cuda_for_torch)}",
+        f"require_llama_gpu = {_bool(config.resources.require_llama_gpu)}",
+        *(_reuse_lines(config) if config.reuse.benchmark_dir is not None else []),
+        "",
         *_benchmark_lines(config.benchmark),
         "",
         *_assistant_lines(config.assistant),
@@ -406,6 +472,13 @@ def _resolve_reproduction_paths(config: ReproductionConfig, base_dir: Path) -> R
         evidence_sources=list(config.evidence_sources),
         assistant_evidence_source=config.assistant_evidence_source,
         profile_experiment_limit=config.profile_experiment_limit,
+        resources=config.resources,
+        reuse=ReproductionReuseConfig(
+            benchmark_dir=str(_resolve_path(config.reuse.benchmark_dir, base_dir))
+            if config.reuse.benchmark_dir is not None
+            else None,
+            mode=config.reuse.mode,
+        ),
     )
 
 
@@ -482,6 +555,21 @@ def _default_relative_path(output_dir: Path, project_relative: Path) -> str:
     base = output_dir.parent if output_dir.name == "config" else output_dir
     target = base / project_relative
     return os.path.relpath(target, output_dir).replace("\\", "/")
+
+
+def _reuse_lines(config: ReproductionConfig) -> list[str]:
+    if config.reuse.benchmark_dir is None:
+        return []
+    return [
+        "",
+        "[reproduction.reuse]",
+        f'benchmark_dir = "{_toml_string(config.reuse.benchmark_dir)}"',
+        f'mode = "{config.reuse.mode or "diagnostic"}"',
+    ]
+
+
+def _worker_toml(value: int | str) -> str:
+    return str(value) if isinstance(value, int) else f'"{_toml_string(value)}"'
 
 
 def _benchmark_lines(config: BenchmarkConfig) -> list[str]:
@@ -572,6 +660,11 @@ def _assistant_lines(config: AssistantReplayConfig) -> list[str]:
     )
     if config.provider.seed is not None:
         lines.append(f"seed = {config.provider.seed}")
+    if config.provider.extra:
+        lines.extend(["", "[assistant.provider.extra]"])
+        lines.extend(
+            f"{key} = {_toml_value(value)}" for key, value in sorted(config.provider.extra.items())
+        )
     return lines
 
 
