@@ -3,7 +3,11 @@
 The audit workflow verifies that a clean checkout can run the committed
 architecture end to end. It checks package imports, CLI loading, architecture
 tests, OPC-UA fixture generation, thesis-smoke reproduction, synthetic raw data
-setup, evidence/XAI outputs, assistant replay artifacts, and optional local resources.
+setup, evidence/XAI outputs, assistant replay artifacts, and optional local
+resources. The use case is `RunReproducibilityAudit`
+(`src/industrial_tsad_eval/application/audit.py:88`); its config dataclass is
+`ReproducibilityAuditConfig` (`:79`); per-check results use `AuditCheck`
+(`domain/audit.py:12`) and aggregate as `AuditRunResult` (`:44`).
 
 Run:
 
@@ -59,9 +63,11 @@ reachable, and thesis-full local prepared dataset setup when `prepared/TEP`,
 probe checks structured planner/referee JSON output; a reachable server that
 does not produce schema-valid assistant replay artifacts is reported as `warn`.
 
-`audit_summary.json` and `audit_summary.md` include `setup_recommendations` for
-skipped optional resources. Each recommendation contains commands and success
-criteria for the next local setup step.
+`audit_summary.json` and `audit_summary.md` include `setup_recommendations`
+(`AuditSetupRecommendation`,
+`src/industrial_tsad_eval/domain/audit.py:29`) for skipped optional resources.
+Each recommendation contains commands and success criteria for the next local
+setup step.
 
 The standard quality gates remain:
 

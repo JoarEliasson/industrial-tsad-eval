@@ -2,7 +2,10 @@
 
 Dataset acquisition is the raw-data boundary before Prepared Format conversion.
 It helps users copy, unpack, and optionally download raw datasets into a local
-cache with provenance.
+cache with provenance. Use cases live in
+`src/industrial_tsad_eval/application/acquisition.py`:
+`ListDatasetSources` (`:43`), `DescribeDatasetSource` (`:57`),
+`AcquireDatasetSource` (`:69`), and `ValidateRawAcquisition` (`:139`).
 
 Acquisition does not prepare data. After acquisition, run `itse prepared prepare`
 explicitly against the returned raw directory.
@@ -29,7 +32,8 @@ data/raw/
 
 Existing dataset directories are refused unless `--overwrite` is supplied.
 Acquisition writes into `<out>/.staging` first, then promotes the finished raw
-directory.
+directory (see staging/promotion helpers in
+`src/industrial_tsad_eval/infrastructure/acquisition.py:28` and `:150`).
 
 ## Supported Sources
 
@@ -39,7 +43,8 @@ directory.
 - `hai-cpps`: `manual`.
 
 Manual acquisition accepts a directory, supported archive, or single file. Safe
-archive unpacking rejects path traversal and archive links.
+archive unpacking (`infrastructure/acquisition.py:59`) rejects path traversal
+and archive links.
 
 Optional Kaggle support is installed with:
 
@@ -49,10 +54,14 @@ python -m pip install -e ".[acquisition]"
 
 Kaggle credentials are handled by Kaggle tooling, not by this package. The
 toolkit does not load `.env` files, store tokens, or manage credentials.
+`kagglehub` is imported lazily inside the source plugins — enforced by
+`tests/test_architecture.py:160`.
 
 ## Provenance
 
-Every acquisition writes `raw_provenance.json`:
+Every acquisition writes `raw_provenance.json` through `write_raw_provenance`
+(`src/industrial_tsad_eval/infrastructure/acquisition.py:117`) using the
+SHA256 inventory from `file_inventory` (`:92`):
 
 ```json
 {
