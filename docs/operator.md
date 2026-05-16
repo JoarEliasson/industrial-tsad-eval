@@ -3,7 +3,13 @@
 Operator cards are deterministic, evidence-grounded summaries for industrial
 anomaly events. They consume Evidence Bundle v1 artifacts and optional local
 Markdown playbooks. They do not call LLMs, remote services, PDF parsers, or
-arbitrary scripts.
+arbitrary scripts — enforced by `tests/test_architecture.py:178`. The use
+cases are `RetrieveOperatorEvidence`
+(`src/industrial_tsad_eval/application/operator.py:81`),
+`GenerateOperatorCards` (`:158`), and `ValidateOperatorCards` (`:253`); cards
+are persisted by `LocalOperatorCardRepository`
+(`infrastructure/operator_repository.py:17`) with Markdown rendered by
+`render_operator_card_markdown` (`:93`).
 
 ## Commands
 
@@ -33,7 +39,8 @@ itse operator retrieve --prepared prepared/SWaT --evidence out/evidence --query 
 
 ## Card Contract
 
-`operator_card.json` uses `operator-card-v1` and includes:
+`operator_card.json` uses `operator-card-v1` (`OperatorCard` dataclass at
+`src/industrial_tsad_eval/domain/operator.py:100`) and includes:
 
 - status: `answered` or `abstained`
 - dataset, run, event, event source, matched GT id when available
@@ -49,9 +56,11 @@ Answered cards require citations. Abstained cards require an abstention reason.
 
 ## Retrieval Behavior
 
-Retrieval chunks Evidence Bundle v1 into deterministic roles: overview, top
-variables, time windows, score context, local rankings, and provenance. Local
-Markdown playbooks are added as playbook chunks when supplied.
+Retrieval (`OperatorRetrievalResult`,
+`src/industrial_tsad_eval/domain/operator.py:81`) chunks Evidence Bundle v1
+into deterministic roles: overview, top variables, time windows, score
+context, local rankings, and provenance. Local Markdown playbooks are added as
+playbook chunks when supplied.
 
 Ranking uses lexical overlap, event/dataset filters, and small role bonuses from
 detected intent. Supported intents are general, checks, recommended actions,

@@ -2,7 +2,15 @@
 
 The reproduction layer ties the productized services together into a
 thesis-shaped run without importing old thesis modules. It exists to reproduce
-the experimental surface while keeping the improved package boundaries.
+the experimental surface while keeping the improved package boundaries. The
+orchestrating use cases live in
+`src/industrial_tsad_eval/application/reproduction.py`:
+`PlanThesisReproduction` (`:80`), `PreflightThesisReproduction` (`:106`),
+`RunThesisReproduction` (`:220`), `SummarizeThesisReproduction` (`:1086`),
+`DiagnoseThesisReproduction` (`:1097`). Run configuration is
+`ReproductionConfig` (`domain/reproduction.py:103`); thesis-draft exports go
+through `write_thesis_draft_exports`
+(`application/thesis_exports.py:26`).
 
 ## Profiles
 
@@ -32,6 +40,11 @@ SWaT, HAI, and HAI_CPPS. Raw data and credentials are never vendored. See
 uses the thesis-aligned neural detector settings and requires native
 explanation artifacts for DRA, InterFusion, and DRCAD while keeping Forecast
 Ridge on the robust baseline.
+
+TOML loading uses `load_reproduction_config`
+(`src/industrial_tsad_eval/infrastructure/reproduction_config.py:376`); writing
+the default template uses `write_default_reproduction_config` (`:392`); the
+provider config template comes from `write_provider_config_template` (`:410`).
 
 ## Stages
 

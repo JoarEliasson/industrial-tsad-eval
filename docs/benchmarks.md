@@ -1,7 +1,10 @@
 # Benchmarks
 
 Benchmarks run a detector/dataset/protocol matrix against existing Prepared
-Format datasets. They do not fetch or prepare raw data.
+Format datasets. They do not fetch or prepare raw data. The orchestrator is
+`RunBenchmark` (`src/industrial_tsad_eval/application/benchmark.py:75`), which
+delegates to `ScoreRuns` (`application/scoring.py:29`) and `EvaluateScores`
+(`application/evaluation.py:40`) for each cell of the matrix.
 
 ## Config
 
@@ -28,6 +31,11 @@ name = "forecast-lstm"
 parameters = { window = 16, train_stride = 8, score_stride = 8, epochs = 1, batch_size = 8, device = "cpu", hidden_size = 8 }
 ```
 
+Config dataclasses live in `src/industrial_tsad_eval/domain/benchmark.py`:
+`BenchmarkConfig` (`:168`), `BenchmarkDatasetConfig` (`:47`),
+`BenchmarkDetectorConfig` (`:59`), `BenchmarkEvaluationConfig` (`:16`),
+`BenchmarkParameterOverride` (`:103`), `BenchmarkExperiment` (`:127`). TOML
+loading and rendering are in `infrastructure/benchmark_config.py:39`/`:55`.
 Relative `prepared` paths are resolved relative to the TOML file. Dataset ids,
 detector ids, and protocols may contain letters, numbers, `.`, `_`, and `-`.
 Experiment ids are generated as:
