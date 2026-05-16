@@ -46,10 +46,13 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluateConfig,
 )
 from industrial_tsad_eval.application.reproduction import (
+    AssembleReproductionSlices,
     DiagnoseThesisReproduction,
     PlanThesisReproduction,
     PreflightThesisReproduction,
+    RunReproductionSlice,
     RunThesisReproduction,
+    StopThesisReproduction,
     SummarizeThesisReproduction,
 )
 from industrial_tsad_eval.application.scoring import ScoreRuns
@@ -319,7 +322,7 @@ def score_run(
         ).run()
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
         _fail(str(exc))
-    console.print_json(data=result.__dict__)
+    console.print_json(data=result.to_dict())
 
 
 @score_app.command("detectors")
@@ -973,6 +976,91 @@ def reproduce_run(
         raise typer.Exit(1)
 
 
+@reproduce_app.command("run-slice")
+def reproduce_run_slice(
+    config: Path = typer.Option(..., "--config", dir_okay=False, help="Reproduction TOML config."),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Reproduction output root."),
+    run_id: str = typer.Option(..., "--run-id", help="Slice run id."),
+    datasets: str | None = typer.Option(
+        None,
+        "--datasets",
+        help="Comma-separated dataset ids for this slice.",
+    ),
+    detectors: str | None = typer.Option(
+        None,
+        "--detectors",
+        help="Comma-separated detector ids or plugin names for this slice.",
+    ),
+    protocols: str | None = typer.Option(
+        None,
+        "--protocols",
+        help="Comma-separated protocol ids for this slice.",
+    ),
+    stages: str = typer.Option(
+        "benchmark,evidence,xai,assistant",
+        "--stages",
+        help="Comma-separated stages: benchmark,evidence,xai,profiles,assistant.",
+    ),
+    no_progress: bool = typer.Option(False, "--no-progress", help="Disable live progress UI."),
+) -> None:
+    """Run a filtered thesis-style reproduction slice."""
+    try:
+        loaded = load_reproduction_config(config)
+        with cli_progress(not no_progress) as progress:
+            result = RunReproductionSlice(
+                config=loaded,
+                detector_registry=default_detector_registry(),
+                provider_registry=default_llm_provider_registry(),
+                out=out,
+                run_id=run_id,
+                datasets=_split_csv_option(datasets),
+                detectors=_split_csv_option(detectors),
+                protocols=_split_csv_option(protocols),
+                stages=_split_csv_option(stages),
+                source_config=config,
+                progress_sink=progress,
+            ).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=result.to_dict())
+    if not result.ok:
+        raise typer.Exit(1)
+
+
+@reproduce_app.command("assemble")
+def reproduce_assemble(
+    runs: list[Path] = typer.Option(
+        ...,
+        "--runs",
+        file_okay=False,
+        help="Slice run directory. Repeat for multiple slices.",
+    ),
+    out: Path = typer.Option(..., "--out", file_okay=False, help="Assembly output root."),
+    run_id: str = typer.Option(..., "--run-id", help="Assembled run id."),
+) -> None:
+    """Assemble compatible reproduction slices into one result pack."""
+    try:
+        payload = AssembleReproductionSlices(runs=list(runs), out=out, run_id=run_id).run()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=payload)
+    if not bool(payload.get("ok")):
+        raise typer.Exit(1)
+
+
+@reproduce_app.command("stop")
+def reproduce_stop(
+    run: Path = typer.Option(..., "--run", file_okay=False, help="Reproduction run directory."),
+    container: str | None = typer.Option(None, "--container", help="Docker container name."),
+) -> None:
+    """Write a cancellation marker and print safe stop commands."""
+    try:
+        payload = StopThesisReproduction(run=run, container=container).run_stop()
+    except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
+        _fail(str(exc))
+    console.print_json(data=payload)
+
+
 @reproduce_app.command("status")
 def reproduce_status(
     run: Path = typer.Option(..., "--run", file_okay=False, help="Reproduction run directory."),
@@ -1064,6 +1152,13 @@ def _parse_ks(value: str) -> list[int]:
     if any(k <= 0 for k in ks):
         raise ValueError("--ks values must be positive.")
     return ks
+
+
+def _split_csv_option(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or None
 
 
 def _status_loop(run: Path, *, watch: bool, interval_s: float) -> None:

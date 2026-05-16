@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -11,7 +12,7 @@ import subprocess
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,13 @@ from industrial_tsad_eval.application.profiling import (
 from industrial_tsad_eval.application.thesis_exports import write_thesis_draft_exports
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
-from industrial_tsad_eval.domain.benchmark import BenchmarkExperimentResult, sanitize_run_id
+from industrial_tsad_eval.domain.benchmark import (
+    BenchmarkConfig,
+    BenchmarkDatasetConfig,
+    BenchmarkDetectorConfig,
+    BenchmarkExperimentResult,
+    sanitize_run_id,
+)
 from industrial_tsad_eval.domain.errors import ReproductionError
 from industrial_tsad_eval.domain.progress import CompositeProgressSink, ProgressEvent, ProgressSink
 from industrial_tsad_eval.domain.reproduction import (
@@ -1083,6 +1090,159 @@ class RunThesisReproduction:
         )
 
 
+class RunReproductionSlice:
+    """Run a filtered reproduction slice with regular reproduction artifacts."""
+
+    def __init__(
+        self,
+        *,
+        config: ReproductionConfig,
+        detector_registry: DetectorRegistry,
+        provider_registry: LLMProviderRegistry,
+        out: str | Path,
+        run_id: str,
+        datasets: list[str] | None = None,
+        detectors: list[str] | None = None,
+        protocols: list[str] | None = None,
+        stages: list[str] | None = None,
+        source_config: str | Path | None = None,
+        progress_sink: ProgressSink | None = None,
+    ):
+        self.config = filter_reproduction_config(
+            config,
+            datasets=datasets,
+            detectors=detectors,
+            protocols=protocols,
+            stages=stages,
+        )
+        self.detector_registry = detector_registry
+        self.provider_registry = provider_registry
+        self.out = out
+        self.run_id = run_id
+        self.source_config = source_config
+        self.progress_sink = progress_sink
+
+    def run(self) -> ReproductionRunResult:
+        """Run the filtered reproduction slice."""
+        return RunThesisReproduction(
+            config=self.config,
+            detector_registry=self.detector_registry,
+            provider_registry=self.provider_registry,
+            out=self.out,
+            run_id=self.run_id,
+            source_config=self.source_config,
+            progress_sink=self.progress_sink,
+        ).run()
+
+
+class AssembleReproductionSlices:
+    """Assemble compatible slice summaries into one provenance-rich result pack."""
+
+    def __init__(
+        self,
+        *,
+        runs: list[str | Path],
+        out: str | Path,
+        run_id: str,
+    ):
+        self.runs = [Path(run) for run in runs]
+        self.out = Path(out)
+        self.run_id = run_id
+
+    def run(self) -> dict[str, Any]:
+        """Validate compatibility and write assembled summary artifacts."""
+        if len(self.runs) < 2:
+            raise ReproductionError("At least two slice run directories are required.")
+        run_payloads = [_slice_payload(run) for run in self.runs]
+        compatibility = _slice_compatibility(run_payloads)
+        if not compatibility["ok"]:
+            raise ReproductionError(
+                "Slice runs are incompatible: "
+                + "; ".join(str(item) for item in compatibility["errors"])
+            )
+        run_root = self.out / self.run_id
+        if run_root.exists():
+            raise ReproductionError(f"Assembled run already exists: {run_root}")
+        writer = LocalArtifactWriter(run_root)
+        detection_rows = _concat_csv_files(
+            [run / "summaries" / "detection_summary.csv" for run in self.runs]
+        )
+        xai_rows = _concat_csv_files([run / "summaries" / "xai_summary.csv" for run in self.runs])
+        assistant_rows = _concat_csv_files(
+            [run / "summaries" / "assistant_summary.csv" for run in self.runs]
+        )
+        writer.write_text("summaries/detection_summary.csv", _csv(detection_rows))
+        writer.write_text("summaries/xai_summary.csv", _csv(xai_rows))
+        writer.write_text("summaries/assistant_summary.csv", _csv(assistant_rows))
+        assembly = {
+            "format_version": "reproduction-slice-assembly-v1",
+            "run_id": self.run_id,
+            "assembled": True,
+            "reporting_note": "This result pack was assembled from compatible reproduction slices.",
+            "source_runs": [payload["run"] for payload in run_payloads],
+            "compatibility": compatibility,
+            "created_at_utc": _utc_now(),
+        }
+        writer.write_json("assembly_manifest.json", assembly)
+        writer.write_json(
+            "summaries/reproducibility_matrix.json",
+            {
+                "assembled": True,
+                "source_runs": [payload["run"] for payload in run_payloads],
+                "detection_rows": detection_rows,
+                "xai_rows": xai_rows,
+                "assistant_rows": assistant_rows,
+            },
+        )
+        ok = all(bool(payload.get("summary", {}).get("ok", False)) for payload in run_payloads)
+        summary = {
+            "run_id": self.run_id,
+            "run_dir": str(run_root),
+            "ok": ok,
+            "assembled": True,
+            "source_run_count": len(run_payloads),
+            "artifacts": {
+                "assembly_manifest": str(run_root / "assembly_manifest.json"),
+                "detection_summary": str(run_root / "summaries" / "detection_summary.csv"),
+                "xai_summary": str(run_root / "summaries" / "xai_summary.csv"),
+                "assistant_summary": str(run_root / "summaries" / "assistant_summary.csv"),
+            },
+        }
+        writer.write_json("summary.json", summary)
+        writer.write_json(
+            "run_manifest.json",
+            {
+                "run_id": self.run_id,
+                "status": "completed" if ok else "failed",
+                "assembled": True,
+                "source_runs": [payload["run"] for payload in run_payloads],
+                "finished_at_utc": _utc_now(),
+            },
+        )
+        return summary
+
+
+class StopThesisReproduction:
+    """Write a safe cancellation marker for a long reproduction run."""
+
+    def __init__(self, *, run: str | Path, container: str | None = None):
+        self.run = Path(run)
+        self.container = container
+
+    def run_stop(self) -> dict[str, Any]:
+        """Write the cancellation marker and return safe follow-up commands."""
+        marker = self.run / "run_control" / "cancel_requested.json"
+        payload = {
+            "format_version": "reproduction-stop-request-v1",
+            "run": str(self.run),
+            "container": self.container,
+            "requested_at_utc": _utc_now(),
+            "commands": _stop_commands(self.container),
+        }
+        LocalArtifactWriter(marker.parent).write_json(marker.name, payload)
+        return payload
+
+
 class SummarizeThesisReproduction:
     """Read a completed reproduction run summary."""
 
@@ -1119,16 +1279,19 @@ class DiagnoseThesisReproduction:
         by_stage = Counter(str(event.get("stage", "unknown")) for event in failed_events)
         by_error = Counter(_error_signature(error) for error in errors)
         benchmark_summary = _benchmark_status(self.run / "benchmark")
+        throughput = _throughput_summary(events, self.run)
         diagnosis = {
             "format_version": "reproduction-diagnostics-v1",
             "run": str(self.run),
             "summary_ok": summary.get("ok"),
             "benchmark": benchmark_summary,
+            "throughput": throughput,
             "failed_event_count": len(failed_events),
             "failed_stage_count": len(failed_stages),
             "failures_by_stage": dict(sorted(by_stage.items())),
             "failures_by_error": dict(sorted(by_error.items())),
             "classification": _diagnostic_classification(errors, benchmark_summary),
+            "diagnostic_only": _diagnostic_only(self.run, summary),
             "latest_failed_event": failed_events[-1] if failed_events else None,
             "next_files": _diagnostic_next_files(self.run),
         }
@@ -1136,6 +1299,214 @@ class DiagnoseThesisReproduction:
         writer.write_json("failure_report.json", diagnosis)
         writer.write_text("failure_report.md", _diagnostic_markdown(diagnosis))
         return diagnosis
+
+
+def filter_reproduction_config(
+    config: ReproductionConfig,
+    *,
+    datasets: list[str] | None = None,
+    detectors: list[str] | None = None,
+    protocols: list[str] | None = None,
+    stages: list[str] | None = None,
+) -> ReproductionConfig:
+    """Return a reproduction config narrowed to a deterministic execution slice."""
+    requested_stages = {stage.strip().lower() for stage in stages or [] if stage.strip()}
+    if (
+        requested_stages
+        and "benchmark" not in requested_stages
+        and config.reuse.benchmark_dir is None
+    ):
+        raise ReproductionError(
+            "Slice stages without benchmark require diagnostic benchmark reuse."
+        )
+    dataset_filter = set(datasets or [])
+    detector_filter = set(detectors or [])
+    protocol_filter = set(protocols or [])
+    selected_datasets = [
+        dataset
+        for dataset in config.benchmark.datasets
+        if not dataset_filter or dataset.id in dataset_filter
+    ]
+    selected_detectors = [
+        detector
+        for detector in config.benchmark.detectors
+        if not detector_filter or detector.id in detector_filter or detector.name in detector_filter
+    ]
+    selected_protocols = [
+        protocol
+        for protocol in config.benchmark.protocols
+        if not protocol_filter or protocol in protocol_filter
+    ]
+    if dataset_filter and len(selected_datasets) != len(dataset_filter):
+        missing = sorted(dataset_filter - {dataset.id for dataset in selected_datasets})
+        raise ReproductionError(f"Unknown dataset slice ids: {missing}.")
+    if detector_filter and not selected_detectors:
+        raise ReproductionError(f"No detectors matched slice ids/names: {sorted(detector_filter)}.")
+    if protocol_filter and len(selected_protocols) != len(protocol_filter):
+        missing = sorted(protocol_filter - set(selected_protocols))
+        raise ReproductionError(f"Unknown protocol slice ids: {missing}.")
+    benchmark = _filtered_benchmark(
+        config.benchmark,
+        datasets=selected_datasets,
+        detectors=selected_detectors,
+        protocols=selected_protocols,
+    )
+    if not benchmark.experiments():
+        raise ReproductionError("Slice filters produced an empty benchmark matrix.")
+    if not requested_stages:
+        return replace(config, benchmark=benchmark)
+    return replace(
+        config,
+        benchmark=benchmark,
+        run_evidence="evidence" in requested_stages,
+        run_xai="xai" in requested_stages,
+        run_profiles="profiles" in requested_stages,
+        run_assistant="assistant" in requested_stages,
+    )
+
+
+def _filtered_benchmark(
+    config: BenchmarkConfig,
+    *,
+    datasets: list[BenchmarkDatasetConfig],
+    detectors: list[BenchmarkDetectorConfig],
+    protocols: list[str],
+) -> BenchmarkConfig:
+    protocol_set = set(protocols)
+    adjusted_detectors: list[BenchmarkDetectorConfig] = []
+    for detector in detectors:
+        detector_protocols = detector.protocols
+        if detector_protocols is not None:
+            detector_protocols = [
+                protocol for protocol in detector_protocols if protocol in protocol_set
+            ]
+        adjusted_detectors.append(replace(detector, protocols=detector_protocols))
+    return replace(config, datasets=datasets, detectors=adjusted_detectors, protocols=protocols)
+
+
+def _slice_payload(run: Path) -> dict[str, Any]:
+    resolved_path = run / "resolved_config.json"
+    if not resolved_path.exists():
+        raise ReproductionError(f"Slice run is missing resolved_config.json: {run}")
+    resolved = read_json(resolved_path)
+    summary_path = run / "summary.json"
+    summary = read_json(summary_path) if summary_path.exists() else {}
+    return {
+        "run": str(run),
+        "resolved": resolved,
+        "summary": summary,
+        "config_hash": _hash_json(resolved),
+        "fingerprints": _prepared_fingerprints(resolved),
+    }
+
+
+def _slice_compatibility(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    errors: list[str] = []
+    baseline = payloads[0]["resolved"]
+    baseline_fingerprints = payloads[0]["fingerprints"]
+    for payload in payloads[1:]:
+        resolved = payload["resolved"]
+        if resolved.get("assistant") != baseline.get("assistant"):
+            errors.append(f"assistant config differs for {payload['run']}")
+        if _benchmark_evaluation(resolved) != _benchmark_evaluation(baseline):
+            errors.append(f"evaluation policy differs for {payload['run']}")
+        for dataset_id, fingerprint in payload["fingerprints"].items():
+            if (
+                dataset_id in baseline_fingerprints
+                and baseline_fingerprints[dataset_id] != fingerprint
+            ):
+                errors.append(f"prepared fingerprint differs for dataset {dataset_id}")
+        errors.extend(
+            f"{error} for {payload['run']}"
+            for error in _compare_detector_configs(baseline, resolved)
+        )
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "config_hashes": [payload["config_hash"] for payload in payloads],
+        "prepared_fingerprints": [payload["fingerprints"] for payload in payloads],
+    }
+
+
+def _benchmark_evaluation(resolved: dict[str, Any]) -> Any:
+    benchmark = resolved.get("benchmark", {})
+    if not isinstance(benchmark, dict):
+        return None
+    inner = benchmark.get("benchmark", {})
+    return inner.get("evaluation") if isinstance(inner, dict) else None
+
+
+def _compare_detector_configs(baseline: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    baseline_detectors = _detectors_by_id(baseline)
+    for detector_id, detector_config in _detectors_by_id(candidate).items():
+        if detector_id in baseline_detectors and baseline_detectors[detector_id] != detector_config:
+            errors.append(f"detector config differs for {detector_id}")
+    return errors
+
+
+def _detectors_by_id(resolved: dict[str, Any]) -> dict[str, Any]:
+    benchmark = resolved.get("benchmark", {})
+    detectors = benchmark.get("detectors", []) if isinstance(benchmark, dict) else []
+    if not isinstance(detectors, list):
+        return {}
+    return {
+        str(detector.get("id")): detector
+        for detector in detectors
+        if isinstance(detector, dict) and detector.get("id")
+    }
+
+
+def _prepared_fingerprints(resolved: dict[str, Any]) -> dict[str, str]:
+    benchmark = resolved.get("benchmark", {})
+    datasets = benchmark.get("datasets", []) if isinstance(benchmark, dict) else []
+    fingerprints: dict[str, str] = {}
+    if not isinstance(datasets, list):
+        return fingerprints
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            continue
+        dataset_id = str(dataset.get("id", ""))
+        prepared = dataset.get("prepared")
+        if dataset_id and isinstance(prepared, str):
+            fingerprints[dataset_id] = _prepared_fingerprint(Path(prepared))
+    return fingerprints
+
+
+def _prepared_fingerprint(prepared: Path) -> str:
+    hasher = hashlib.sha256()
+    for relative in ("meta/manifest.json", "meta/schema.json", "meta/splits.json"):
+        path = prepared / relative
+        hasher.update(relative.encode("utf-8"))
+        if path.exists():
+            hasher.update(path.read_bytes())
+        else:
+            hasher.update(f"missing:{path}".encode())
+    return hasher.hexdigest()
+
+
+def _hash_json(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _concat_csv_files(paths: list[Path]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not text.strip():
+            continue
+        reader = csv.DictReader(io.StringIO(text))
+        rows.extend(dict(row) for row in reader)
+    return rows
+
+
+def _stop_commands(container: str | None) -> list[str]:
+    if not container:
+        return ["Inspect the active run container, then stop it at a safe checkpoint."]
+    return [f"docker stop {container}"]
 
 
 def _dataset_config(config: ReproductionConfig, dataset_id: str) -> Any:
@@ -1189,7 +1560,18 @@ def _read_progress_events(path: Path) -> list[dict[str, Any]]:
 def _benchmark_status(root: Path) -> dict[str, Any]:
     summary_path = root / "summary.json"
     if not summary_path.exists():
-        return {"status": "missing", "completed": 0, "failed": 0, "planned": 0}
+        status_rows = _partial_benchmark_status_rows(root)
+        if not status_rows:
+            return {"status": "missing", "completed": 0, "failed": 0, "planned": 0}
+        statuses = Counter(str(row.get("status", "unknown")) for row in status_rows)
+        return {
+            "status": "partial",
+            "ok": False,
+            "planned": len(status_rows),
+            "completed": statuses.get("completed", 0),
+            "failed": statuses.get("failed", 0),
+            "by_status": dict(sorted(statuses.items())),
+        }
     payload = read_json(summary_path)
     rows = payload.get("experiments", [])
     if not isinstance(rows, list):
@@ -1203,6 +1585,21 @@ def _benchmark_status(root: Path) -> dict[str, Any]:
         "failed": statuses.get("failed", 0),
         "by_status": dict(sorted(statuses.items())),
     }
+
+
+def _partial_benchmark_status_rows(root: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    experiments = root / "experiments"
+    if not experiments.exists():
+        return rows
+    for status_path in sorted(experiments.glob("*/status.json")):
+        try:
+            payload = read_json(status_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
 
 
 def _error_signature(error: str) -> str:
@@ -1233,6 +1630,46 @@ def _diagnostic_classification(errors: list[str], benchmark: dict[str, Any]) -> 
     return "no_recorded_failures"
 
 
+def _throughput_summary(events: list[dict[str, Any]], run: Path) -> dict[str, Any]:
+    completed = [
+        event
+        for event in events
+        if str(event.get("status")) == "completed" and event.get("duration_s") is not None
+    ]
+    slowest = sorted(
+        completed,
+        key=lambda event: float(event.get("duration_s") or 0.0),
+        reverse=True,
+    )[:10]
+    benchmark_events = [event for event in completed if str(event.get("stage")) == "benchmark"]
+    score_files = list((run / "benchmark" / "experiments").rglob("scores/*.parquet"))
+    total_duration = sum(float(event.get("duration_s") or 0.0) for event in benchmark_events)
+    files_per_hour = (len(score_files) / (total_duration / 3600.0)) if total_duration > 0 else None
+    return {
+        "completed_events_with_duration": len(completed),
+        "benchmark_completed_events": len(benchmark_events),
+        "score_parquet_files": len(score_files),
+        "benchmark_files_per_hour": files_per_hour,
+        "slowest_events": [
+            {
+                "stage": event.get("stage"),
+                "item_id": event.get("item_id"),
+                "duration_s": event.get("duration_s"),
+                "path": event.get("path"),
+            }
+            for event in slowest
+        ],
+    }
+
+
+def _diagnostic_only(run: Path, summary: dict[str, Any]) -> bool:
+    if (run / "run_control" / "stopped_for_performance_triage.json").exists():
+        return True
+    if (run / "run_control" / "cancel_requested.json").exists():
+        return True
+    return bool(summary.get("assembled"))
+
+
 def _diagnostic_next_files(run: Path) -> list[str]:
     candidates = [
         run / "progress_snapshot.json",
@@ -1250,6 +1687,7 @@ def _diagnostic_markdown(payload: dict[str, Any]) -> str:
         "",
         f"- Run: `{payload.get('run')}`",
         f"- Classification: `{payload.get('classification')}`",
+        f"- Diagnostic only: `{payload.get('diagnostic_only')}`",
         f"- Summary ok: `{payload.get('summary_ok')}`",
         f"- Failed progress events: `{payload.get('failed_event_count')}`",
         f"- Failed stages: `{payload.get('failed_stage_count')}`",
@@ -1266,6 +1704,21 @@ def _diagnostic_markdown(payload: dict[str, Any]) -> str:
     lines.extend(["", "## Failures By Error"])
     for error, count in dict(payload.get("failures_by_error", {})).items():
         lines.append(f"- `{error}`: {count}")
+    throughput = dict(payload.get("throughput", {}))
+    lines.extend(
+        [
+            "",
+            "## Throughput",
+            f"- Score parquet files: `{throughput.get('score_parquet_files')}`",
+            f"- Benchmark files/hour: `{throughput.get('benchmark_files_per_hour')}`",
+            "- Slowest events:",
+        ]
+    )
+    for event in throughput.get("slowest_events", []) or []:
+        if isinstance(event, dict):
+            lines.append(
+                f"  - `{event.get('stage')}:{event.get('item_id')}` `{event.get('duration_s')}` s"
+            )
     lines.extend(["", "## Next Files"])
     for path in payload.get("next_files", []):
         lines.append(f"- `{path}`")
@@ -1482,11 +1935,19 @@ def _int_or_none(value: str) -> int | None:
 
 
 def _benchmark_workers(config: ReproductionConfig) -> int:
-    return _resolve_workers(config.resources.benchmark_workers, config.resources.cpu_threads, 2)
+    return _resolve_workers(
+        config.resources.benchmark_workers,
+        config.resources.cpu_threads,
+        max(1, config.resources.cpu_threads),
+    )
 
 
 def _evidence_workers(config: ReproductionConfig) -> int:
-    return _resolve_workers(config.resources.evidence_workers, config.resources.cpu_threads, 4)
+    return _resolve_workers(
+        config.resources.evidence_workers,
+        config.resources.cpu_threads,
+        max(1, config.resources.cpu_threads),
+    )
 
 
 def _assistant_workers(config: ReproductionConfig) -> int:
@@ -1500,7 +1961,7 @@ def _resolve_workers(value: int | str, cpu_threads: int, cap: int) -> int:
     if isinstance(value, int):
         return max(1, value)
     if value == "auto":
-        return max(1, min(cap, max(1, cpu_threads // 3)))
+        return max(1, min(cap, cpu_threads))
     if value == "conservative":
         return 1
     return max(1, int(value))

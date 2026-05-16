@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from industrial_tsad_eval.application.evaluation import EvaluateScores
-from industrial_tsad_eval.application.scoring import ScoreRuns
+from industrial_tsad_eval.application.scoring import ScoreRuns, write_detector_explanations
 from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
 from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
@@ -25,6 +26,8 @@ from industrial_tsad_eval.domain.errors import BenchmarkRunError, IndustrialTSAD
 from industrial_tsad_eval.domain.progress import CompositeProgressSink, ProgressEvent, ProgressSink
 from industrial_tsad_eval.infrastructure.artifacts import LocalArtifactWriter
 from industrial_tsad_eval.infrastructure.benchmark_config import render_benchmark_config_toml
+from industrial_tsad_eval.infrastructure.explanation_repository import LocalExplanationRepository
+from industrial_tsad_eval.infrastructure.prepared_repository import LocalPreparedDatasetRepository
 from industrial_tsad_eval.infrastructure.progress import LocalProgressSink
 from industrial_tsad_eval.plugins.registry import DetectorRegistry
 
@@ -70,6 +73,70 @@ class BenchmarkRunResult:
             "ok": self.ok,
             "results": [result.to_dict() for result in self.results],
         }
+
+
+@dataclass
+class _QueueState:
+    """Thread-safe benchmark queue counters for progress snapshots."""
+
+    run_id: str
+    total: int
+    cpu_queued: int = 0
+    gpu_queued: int = 0
+    cpu_running: int = 0
+    gpu_running: int = 0
+    completed: int = 0
+    failed: int = 0
+
+    _lock: threading.Lock = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def emit(self, progress: ProgressSink) -> None:
+        with self._lock:
+            metrics = {
+                "cpu_running": self.cpu_running,
+                "gpu_running": self.gpu_running,
+                "cpu_queued": self.cpu_queued,
+                "gpu_queued": self.gpu_queued,
+                "queued": self.cpu_queued + self.gpu_queued,
+                "completed": self.completed,
+                "failed": self.failed,
+            }
+        progress.emit(
+            ProgressEvent(
+                run_id=self.run_id,
+                stage="benchmark_queue",
+                item_id="state",
+                status="running",
+                ordinal=metrics["completed"] + metrics["failed"],
+                total=self.total,
+                metrics=metrics,
+            )
+        )
+
+    def mark_started(self, queue: str, progress: ProgressSink) -> None:
+        with self._lock:
+            if queue == "gpu":
+                self.gpu_queued = max(0, self.gpu_queued - 1)
+                self.gpu_running += 1
+            else:
+                self.cpu_queued = max(0, self.cpu_queued - 1)
+                self.cpu_running += 1
+        self.emit(progress)
+
+    def mark_finished(self, queue: str, status: str, progress: ProgressSink) -> None:
+        with self._lock:
+            if queue == "gpu":
+                self.gpu_running = max(0, self.gpu_running - 1)
+            else:
+                self.cpu_running = max(0, self.cpu_running - 1)
+            if status == "completed":
+                self.completed += 1
+            else:
+                self.failed += 1
+        self.emit(progress)
 
 
 class RunBenchmark:
@@ -189,45 +256,93 @@ class RunBenchmark:
                 for ordinal, experiment in enumerate(experiments, start=1)
             ]
 
-        gpu_semaphore = threading.Semaphore(self.gpu_slots or 1)
         ordered: list[BenchmarkExperimentResult | None] = [None] * len(experiments)
-        with ThreadPoolExecutor(max_workers=min(self.worker_count, len(experiments))) as executor:
-            future_to_index = {
-                executor.submit(
-                    self._run_experiment_with_resource_guard,
-                    run_root,
-                    experiment,
-                    validation_errors,
-                    progress,
-                    ordinal,
-                    len(experiments),
-                    gpu_semaphore,
-                ): ordinal - 1
-                for ordinal, experiment in enumerate(experiments, start=1)
-            }
-            for future in as_completed(future_to_index):
-                ordered[future_to_index[future]] = future.result()
+        gpu_slots = max(1, self.gpu_slots)
+        gpu_tasks: list[tuple[int, BenchmarkExperiment]] = []
+        cpu_tasks: list[tuple[int, BenchmarkExperiment]] = []
+        for ordinal, experiment in enumerate(experiments, start=1):
+            if self._requires_gpu(experiment):
+                gpu_tasks.append((ordinal, experiment))
+            else:
+                cpu_tasks.append((ordinal, experiment))
+
+        queue_state = _QueueState(
+            run_id=self.run_id,
+            total=len(experiments),
+            cpu_queued=len(cpu_tasks),
+            gpu_queued=len(gpu_tasks),
+        )
+        queue_state.emit(progress)
+        cpu_workers = max(1, min(len(cpu_tasks), self.worker_count)) if cpu_tasks else 0
+        if cpu_tasks and gpu_tasks:
+            cpu_workers = max(1, min(len(cpu_tasks), max(1, self.worker_count - gpu_slots)))
+        gpu_workers = min(gpu_slots, len(gpu_tasks))
+        futures: dict[Any, int] = {}
+        with (
+            ThreadPoolExecutor(max_workers=cpu_workers or 1) as cpu_executor,
+            ThreadPoolExecutor(max_workers=gpu_workers or 1) as gpu_executor,
+        ):
+            for ordinal, experiment in cpu_tasks:
+                futures[
+                    cpu_executor.submit(
+                        self._run_queued_experiment,
+                        "cpu",
+                        run_root,
+                        experiment,
+                        validation_errors,
+                        progress,
+                        ordinal,
+                        len(experiments),
+                        queue_state,
+                    )
+                ] = ordinal - 1
+            for ordinal, experiment in gpu_tasks:
+                futures[
+                    gpu_executor.submit(
+                        self._run_queued_experiment,
+                        "gpu",
+                        run_root,
+                        experiment,
+                        validation_errors,
+                        progress,
+                        ordinal,
+                        len(experiments),
+                        queue_state,
+                    )
+                ] = ordinal - 1
+            for future in as_completed(futures):
+                ordered[futures[future]] = future.result()
         return [result for result in ordered if result is not None]
 
-    def _run_experiment_with_resource_guard(
+    def _requires_gpu(self, experiment: BenchmarkExperiment) -> bool:
+        try:
+            return bool(
+                getattr(
+                    self.detector_registry.get(experiment.detector.name),
+                    "requires_torch",
+                    False,
+                )
+            )
+        except IndustrialTSADError:
+            return False
+
+    def _run_queued_experiment(
         self,
+        queue: str,
         run_root: Path,
         experiment: BenchmarkExperiment,
         validation_errors: dict[str, list[str]],
         progress: ProgressSink,
         ordinal: int,
         total: int,
-        gpu_semaphore: threading.Semaphore,
+        queue_state: _QueueState,
     ) -> BenchmarkExperimentResult:
-        plugin = self.detector_registry.get(experiment.detector.name)
-        if getattr(plugin, "requires_torch", False):
-            with gpu_semaphore:
-                return self._run_experiment_with_progress(
-                    run_root, experiment, validation_errors, progress, ordinal, total
-                )
-        return self._run_experiment_with_progress(
+        queue_state.mark_started(queue, progress)
+        result = self._run_experiment_with_progress(
             run_root, experiment, validation_errors, progress, ordinal, total
         )
+        queue_state.mark_finished(queue, result.status, progress)
+        return result
 
     def _run_experiment_with_progress(
         self,
@@ -305,6 +420,8 @@ class RunBenchmark:
                 detector_name=experiment.detector.name,
                 protocol=experiment.protocol,
                 detector_parameters=experiment.detector.parameters,
+                explanation_mode="none",
+                write_workers=_score_write_workers(self.worker_count),
             ).run()
             score_report = ValidateScores(experiment.dataset.prepared, scores_dir).run()
             if not score_report.ok:
@@ -319,6 +436,16 @@ class RunBenchmark:
                     experiment.protocol,
                 ),
             ).run()
+            explained_runs = _write_selected_native_explanations(
+                fitted_detector=score_result.fitted_detector,
+                prepared=experiment.dataset.prepared,
+                scores_dir=scores_dir,
+                eval_dir=eval_dir,
+                protocol=experiment.protocol,
+                detector_id=experiment.detector.id,
+                dataset=experiment.dataset.id,
+                write_workers=_score_write_workers(self.worker_count),
+            )
             result = BenchmarkExperimentResult(
                 experiment_id=experiment.experiment_id,
                 dataset=experiment.dataset.id,
@@ -336,6 +463,7 @@ class RunBenchmark:
                     **result.to_dict(),
                     "finished_at_utc": _utc_now(),
                     "runs_scored": score_result.runs_scored,
+                    "runs_explained": explained_runs,
                     "detector_parameters": dict(experiment.detector.parameters),
                     "evaluation_policy": eval_result.metrics.get("policy"),
                 },
@@ -389,6 +517,90 @@ def summary_row(result: BenchmarkExperimentResult) -> dict[str, Any]:
         "eval_dir": result.eval_dir,
         "error": result.error,
     }
+
+
+def _write_selected_native_explanations(
+    *,
+    fitted_detector: Any,
+    prepared: str,
+    scores_dir: Path,
+    eval_dir: Path,
+    protocol: str,
+    detector_id: str,
+    dataset: str,
+    write_workers: int,
+) -> list[str]:
+    if fitted_detector is None or not callable(getattr(fitted_detector, "explain_run", None)):
+        return []
+    prepared_repository = LocalPreparedDatasetRepository(prepared)
+    run_ids = _selected_explanation_run_ids(prepared_repository, eval_dir, protocol)
+    if not run_ids:
+        return []
+    return write_detector_explanations(
+        detector=fitted_detector,
+        prepared_repository=prepared_repository,
+        explanation_repository=LocalExplanationRepository(scores_dir / "explanations"),
+        run_ids=run_ids,
+        write_workers=write_workers,
+        refresh_score_context=True,
+        metadata={
+            "detector": detector_id,
+            "dataset": dataset,
+            "protocol": protocol,
+            "selection": "event-window-runs",
+            "selection_event_limit": 100,
+        },
+    )
+
+
+def _selected_explanation_run_ids(
+    repository: LocalPreparedDatasetRepository,
+    eval_dir: Path,
+    protocol: str,
+    *,
+    event_limit: int = 100,
+) -> list[str]:
+    split = _protocol_split(repository.splits(), protocol)
+    test_runs = set(split.get("test_runs", []))
+    selected: list[str] = []
+    seen: set[str] = set()
+    for event in sorted(
+        repository.read_events(),
+        key=lambda item: (item.run_id, item.start_ts_ns, item.event_id),
+    )[:event_limit]:
+        if test_runs and event.run_id not in test_runs:
+            continue
+        if event.run_id not in seen:
+            selected.append(event.run_id)
+            seen.add(event.run_id)
+    matches_path = eval_dir / "event_matches.json"
+    if matches_path.exists():
+        payload = json.loads(matches_path.read_text(encoding="utf-8"))
+        pred_events = payload.get("pred_events", [])
+        if isinstance(pred_events, list):
+            for raw_event in pred_events[:event_limit]:
+                if not isinstance(raw_event, dict):
+                    continue
+                run_id = str(raw_event.get("run_id", ""))
+                if run_id and run_id not in seen:
+                    selected.append(run_id)
+                    seen.add(run_id)
+    return selected
+
+
+def _protocol_split(splits: dict[str, Any], protocol: str) -> dict[str, list[str]]:
+    selected = splits.get(protocol, splits.get("naive", splits))
+    if not isinstance(selected, dict):
+        raise ValueError(f"Split protocol {protocol!r} is not an object.")
+    return {
+        "train_runs": [str(run_id) for run_id in selected.get("train_runs", [])],
+        "val_runs": [str(run_id) for run_id in selected.get("val_runs", [])],
+        "test_runs": [str(run_id) for run_id in selected.get("test_runs", [])],
+    }
+
+
+def _score_write_workers(worker_count: int) -> int:
+    return max(1, min(4, worker_count))
 
 
 def _progress_metrics(result: BenchmarkExperimentResult) -> dict[str, Any]:

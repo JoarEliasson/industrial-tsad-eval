@@ -188,7 +188,28 @@ Docker equivalent:
 epochs or detector parameters in the local TOML if the target machine needs a
 smaller or larger budget.
 
-## 6. Expected Artifacts
+## 6. Chunked Thesis-Style Execution
+
+If one uninterrupted run is too long for the machine window, run compatible
+slices without reducing detector budgets:
+
+```powershell
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce run-slice --config config\thesis_full.docker.toml --out out\reproduction --run-id swat-drcad-naive --datasets SWaT --detectors drcad --protocols naive --stages benchmark,evidence,xai,assistant
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce run-slice --config config\thesis_full.docker.toml --out out\reproduction --run-id tep-forecast-ridge --datasets TEP --detectors forecast-ridge --protocols naive,all_in_one,zero_shot --stages benchmark,evidence,xai,assistant
+```
+
+Assemble only slices produced from compatible code, config, provider settings,
+detector parameters, evaluation policy, and prepared dataset fingerprints:
+
+```powershell
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce assemble --runs out\reproduction\swat-drcad-naive --runs out\reproduction\tep-forecast-ridge --out out\reproduction --run-id thesis-full-assembled-YYYYMMDD
+```
+
+The assembled pack is provenance-rich and marked as assembled. It is useful when
+execution windows are limited; a single uninterrupted run remains the cleanest
+reporting route when practical.
+
+## 7. Expected Artifacts
 
 ```text
 out/reproduction/<run_id>/

@@ -180,3 +180,19 @@ def test_reproduction_diagnostics_group_native_evidence_failures(tmp_path: Path)
     assert report["classification"] == "downstream_operational_native_evidence_coverage"
     assert report["failures_by_error"] == {"native_explanation_missing_event_overlap": 1}
     assert (run / "diagnostics" / "failure_report.md").exists()
+
+
+def test_reproduction_diagnostics_count_partial_benchmark_status_files(tmp_path: Path):
+    run = tmp_path / "partial"
+    experiment = run / "benchmark" / "experiments" / "a"
+    experiment.mkdir(parents=True)
+    (experiment / "status.json").write_text(
+        json.dumps({"experiment_id": "a", "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    report = DiagnoseThesisReproduction(run).run_diagnostics()
+
+    assert report["benchmark"]["status"] == "partial"
+    assert report["benchmark"]["completed"] == 1
+    assert report["diagnostic_only"] is False

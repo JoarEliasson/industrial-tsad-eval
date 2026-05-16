@@ -55,6 +55,43 @@ itse reproduce status --run out/reproduction/smoke
 itse reproduce summarize --run out/reproduction/smoke
 ```
 
+## Chunked Runs
+
+Long thesis-style runs can be split into compatible slices. This keeps each
+execution window bounded while preserving full training, scoring, metric, XAI,
+and assistant settings inside each selected cell.
+
+Run one detector/dataset/protocol slice:
+
+```powershell
+itse reproduce run-slice --config config/thesis_full.toml --out out/reproduction --run-id swat-drcad-naive --datasets SWaT --detectors drcad --protocols naive --stages benchmark,evidence,xai,assistant
+```
+
+Run a detector family as a slice:
+
+```powershell
+itse reproduce run-slice --config config/thesis_full.toml --out out/reproduction --run-id tep-dra --datasets TEP --detectors dra --protocols naive,all_in_one,zero_shot
+```
+
+Assemble compatible slices:
+
+```powershell
+itse reproduce assemble --runs out/reproduction/swat-drcad-naive --runs out/reproduction/tep-dra --out out/reproduction --run-id thesis-full-assembled
+```
+
+Assembly validates compatible configs, prepared dataset fingerprints, detector
+parameters, evaluation policy, and provider config. The assembled result pack is
+explicitly marked as assembled from slices; use it when provenance-rich chunked
+execution is preferred over one uninterrupted run.
+
+For graceful cancellation, write a run-control marker before stopping the
+container:
+
+```powershell
+itse reproduce stop --run out/reproduction/<run_id> --container <container-name>
+docker stop <container-name>
+```
+
 ## Artifacts
 
 ```text

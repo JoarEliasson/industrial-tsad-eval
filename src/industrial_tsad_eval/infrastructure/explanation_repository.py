@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ class LocalExplanationRepository:
     def __init__(self, root: str | Path):
         self._root = Path(root)
         self._manifest: dict[str, str] = {}
+        self._lock = threading.Lock()
 
     @property
     def root(self) -> Path:
@@ -57,14 +59,19 @@ class LocalExplanationRepository:
         self._root.mkdir(parents=True, exist_ok=True)
         filename = f"{run_id.replace('/', '__')}.parquet"
         explanations.to_parquet(self._root / filename, index=False)
-        self._manifest[run_id] = filename
+        with self._lock:
+            self._manifest[run_id] = filename
 
     def write_manifest(self) -> None:
         """Write the run-to-file explanation manifest."""
-        if self._manifest:
-            write_json(self._root / "manifest.json", self._manifest)
+        with self._lock:
+            manifest = dict(self._manifest)
+        if manifest:
+            write_json(self._root / "manifest.json", manifest)
 
     def write_metadata(self, metadata: dict[str, Any]) -> None:
         """Write explanation metadata beside explanation files."""
-        if self._manifest:
+        with self._lock:
+            has_manifest = bool(self._manifest)
+        if has_manifest:
             write_json(self._root / "explanation_meta.json", metadata)
