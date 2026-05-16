@@ -13,6 +13,7 @@ from industrial_tsad_eval.application.reproduction import (
     StopThesisReproduction,
     filter_reproduction_config,
 )
+from industrial_tsad_eval.application.scoring import ScoreRuns
 from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
     BenchmarkDatasetConfig,
@@ -61,6 +62,28 @@ class _SleepPlugin:
         return _SleepDetector(self._delay_s)
 
 
+class _BatchDetector(_SleepDetector):
+    def __init__(self):
+        super().__init__(0.0)
+        self.batch_called = False
+
+    def score_runs(self, repository: Any, run_ids: list[str]) -> dict[str, pd.DataFrame]:
+        self.batch_called = True
+        return {run_id: self.score_run(repository, run_id) for run_id in run_ids}
+
+    def score_batch_telemetry(self) -> dict[str, Any]:
+        return {"batch_called": self.batch_called}
+
+
+class _BatchPlugin:
+    @property
+    def name(self) -> str:
+        return "batch-detector"
+
+    def create(self, config: DetectorRunConfig) -> _BatchDetector:
+        return _BatchDetector()
+
+
 def test_benchmark_scheduler_keeps_cpu_queue_from_waiting_on_gpu_slots(tmp_path: Path):
     prepared = make_opcua_fixture(tmp_path / "examples")
     registry = DetectorRegistry()
@@ -102,6 +125,23 @@ def test_benchmark_scheduler_keeps_cpu_queue_from_waiting_on_gpu_slots(tmp_path:
     queue_metrics = snapshot["items"]["benchmark_queue:state"]["metrics"]
     assert queue_metrics["completed"] == 3
     assert queue_metrics["failed"] == 0
+
+
+def test_score_runs_uses_optional_batch_api(tmp_path: Path):
+    prepared = make_opcua_fixture(tmp_path / "examples")
+    registry = DetectorRegistry()
+    registry.register(_BatchPlugin())
+
+    result = ScoreRuns(
+        detector_registry=registry,
+        prepared=prepared,
+        scores=tmp_path / "scores",
+        detector_name="batch-detector",
+    ).run()
+
+    assert result.telemetry["batch_api_used"] is True
+    assert result.telemetry["detector_batch_telemetry"] == {"batch_called": True}
+    assert result.telemetry["score_file_write_count"] == 3
 
 
 def test_slice_filter_produces_single_detector_dataset_protocol(tmp_path: Path):

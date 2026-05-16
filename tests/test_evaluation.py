@@ -81,6 +81,34 @@ def test_evaluate_scores_writes_report_artifacts(opcua_prepared: Path, tmp_path:
     assert (out / "event_matches.json").exists()
 
 
+def test_evaluate_scores_uses_combined_sidecar_when_present(
+    monkeypatch,
+    opcua_prepared: Path,
+    tmp_path: Path,
+):
+    scores = tmp_path / "scores_sidecar"
+    out = tmp_path / "eval_sidecar"
+    ScoreRuns(
+        detector_registry=default_detector_registry(),
+        prepared=opcua_prepared,
+        scores=scores,
+        detector_name="forecast-ridge",
+        detector_parameters={"window": 24, "stride": 4, "lags": 1},
+    ).run()
+
+    def fail_per_run_read(*_args, **_kwargs):
+        raise AssertionError("per-run score reads should not be used when sidecar exists")
+
+    monkeypatch.setattr(
+        "industrial_tsad_eval.infrastructure.score_repository.LocalScoreRepository.read_run_scores",
+        fail_per_run_read,
+    )
+
+    result = EvaluateScores(prepared=opcua_prepared, scores=scores, out=out).run()
+
+    assert result.metrics["score_io"]["used_combined_scores"] is True
+
+
 def test_evaluate_scores_honors_metric_compute_groups(opcua_prepared: Path, tmp_path: Path):
     scores = tmp_path / "scores_compute"
     out = tmp_path / "eval_compute"

@@ -34,7 +34,11 @@ from industrial_tsad_eval.application.profiling import (
     ProfileScoreEvaluateConfig,
 )
 from industrial_tsad_eval.application.thesis_exports import write_thesis_draft_exports
-from industrial_tsad_eval.application.validation import ValidatePreparedDataset
+from industrial_tsad_eval.application.validation import (
+    ValidatePreparedDataset,
+    ValidatePreparedDatasetCached,
+    prepared_validation_fingerprint,
+)
 from industrial_tsad_eval.application.xai import EvaluateEvidence, EvaluateEvidenceConfig
 from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
@@ -119,10 +123,12 @@ class PreflightThesisReproduction:
         config: ReproductionConfig,
         provider_registry: LLMProviderRegistry,
         detector_registry: DetectorRegistry | None = None,
+        validation_cache_root: str | Path | None = None,
     ):
         self.config = config
         self.provider_registry = provider_registry
         self.detector_registry = detector_registry
+        self.validation_cache_root = Path(validation_cache_root) if validation_cache_root else None
 
     def run(self) -> dict[str, Any]:
         """Return preflight checks for datasets and assistant replay provider config."""
@@ -137,7 +143,14 @@ class PreflightThesisReproduction:
                 "short_circuit_reason": "required resource preflight failed",
             }
         for dataset in self.config.benchmark.datasets:
-            report = ValidatePreparedDataset(dataset.prepared).run()
+            if self.validation_cache_root:
+                report, cache_details = ValidatePreparedDatasetCached(
+                    dataset.prepared,
+                    self.validation_cache_root,
+                ).run()
+            else:
+                report = ValidatePreparedDataset(dataset.prepared).run()
+                cache_details = {"validation_cache": "disabled"}
             checks.append(
                 {
                     "name": f"prepared:{dataset.id}",
@@ -145,7 +158,7 @@ class PreflightThesisReproduction:
                     "message": "Prepared dataset validation passed."
                     if report.ok
                     else "Prepared dataset validation failed.",
-                    "details": report.to_dict(),
+                    "details": {**report.to_dict(), **cache_details},
                 }
             )
         assistant = PreflightAssistantReplay(
@@ -297,6 +310,7 @@ class RunThesisReproduction:
                 config=self.config,
                 provider_registry=self.provider_registry,
                 detector_registry=self.detector_registry,
+                validation_cache_root=_prepared_validation_cache_root(run_root),
             ).run()
         _append_sample(profile_samples, monitor)
         writer.write_json("preflight.json", preflight)
@@ -348,6 +362,7 @@ class RunThesisReproduction:
                     progress_sink=progress,
                     worker_count=_benchmark_workers(self.config),
                     gpu_slots=self.config.resources.gpu_slots,
+                    validation_cache_root=_prepared_validation_cache_root(run_root),
                 ).run()
             _append_sample(profile_samples, monitor)
         else:
@@ -1474,15 +1489,7 @@ def _prepared_fingerprints(resolved: dict[str, Any]) -> dict[str, str]:
 
 
 def _prepared_fingerprint(prepared: Path) -> str:
-    hasher = hashlib.sha256()
-    for relative in ("meta/manifest.json", "meta/schema.json", "meta/splits.json"):
-        path = prepared / relative
-        hasher.update(relative.encode("utf-8"))
-        if path.exists():
-            hasher.update(path.read_bytes())
-        else:
-            hasher.update(f"missing:{path}".encode())
-    return hasher.hexdigest()
+    return prepared_validation_fingerprint(prepared)
 
 
 def _hash_json(payload: dict[str, Any]) -> str:
@@ -1643,12 +1650,14 @@ def _throughput_summary(events: list[dict[str, Any]], run: Path) -> dict[str, An
     )[:10]
     benchmark_events = [event for event in completed if str(event.get("stage")) == "benchmark"]
     score_files = list((run / "benchmark" / "experiments").rglob("scores/*.parquet"))
+    combined_score_files = [path for path in score_files if path.name == "combined_scores.parquet"]
     total_duration = sum(float(event.get("duration_s") or 0.0) for event in benchmark_events)
     files_per_hour = (len(score_files) / (total_duration / 3600.0)) if total_duration > 0 else None
     return {
         "completed_events_with_duration": len(completed),
         "benchmark_completed_events": len(benchmark_events),
         "score_parquet_files": len(score_files),
+        "combined_score_sidecars": len(combined_score_files),
         "benchmark_files_per_hour": files_per_hour,
         "slowest_events": [
             {
@@ -1656,10 +1665,26 @@ def _throughput_summary(events: list[dict[str, Any]], run: Path) -> dict[str, An
                 "item_id": event.get("item_id"),
                 "duration_s": event.get("duration_s"),
                 "path": event.get("path"),
+                "scoring_telemetry": _scoring_telemetry_for_event(event),
             }
             for event in slowest
         ],
     }
+
+
+def _scoring_telemetry_for_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    path = event.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    metadata_path = Path(path) / "scores" / "model_meta.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        metadata = read_json(metadata_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    telemetry = metadata.get("scoring_telemetry")
+    return dict(telemetry) if isinstance(telemetry, dict) else None
 
 
 def _diagnostic_only(run: Path, summary: dict[str, Any]) -> bool:
@@ -1710,6 +1735,7 @@ def _diagnostic_markdown(payload: dict[str, Any]) -> str:
             "",
             "## Throughput",
             f"- Score parquet files: `{throughput.get('score_parquet_files')}`",
+            f"- Combined score sidecars: `{throughput.get('combined_score_sidecars')}`",
             f"- Benchmark files/hour: `{throughput.get('benchmark_files_per_hour')}`",
             "- Slowest events:",
         ]
@@ -1766,6 +1792,13 @@ def _write_inline_profile(run_root: Path, samples: list[Any]) -> None:
     LocalArtifactWriter(profile_root).write_text("budget_check.md", render_budget_markdown(summary))
 
 
+def _prepared_validation_cache_root(run_root: Path) -> Path:
+    """Return the ignored cache root shared by reproduction preflight and benchmark."""
+    if run_root.parent.name in {"reproduction", "preflight"}:
+        return run_root.parent.parent / "cache" / "prepared-validation"
+    return run_root.parent / "cache" / "prepared-validation"
+
+
 def _resource_budget(config: ReproductionConfig) -> dict[str, Any]:
     env_keys = [
         "OMP_NUM_THREADS",
@@ -1775,6 +1808,10 @@ def _resource_budget(config: ReproductionConfig) -> dict[str, Any]:
         "INDUSTRIAL_TSAD_CONTAINER_MEMORY_GB",
         "INDUSTRIAL_TSAD_CONTAINER_GPU",
         "INDUSTRIAL_TSAD_LLAMA_BASE_URL",
+        "INDUSTRIAL_TSAD_DOCKER_IO_ROUTE",
+        "INDUSTRIAL_TSAD_PREPARED_VOLUME",
+        "INDUSTRIAL_TSAD_OUT_VOLUME",
+        "INDUSTRIAL_TSAD_CPU_SCORE_WORKERS",
     ]
     return {
         "format_version": "reproduction-resource-budget-v1",

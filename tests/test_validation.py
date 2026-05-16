@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from industrial_tsad_eval.application.validation import ValidatePreparedDataset
+from industrial_tsad_eval.application.validation import (
+    ValidatePreparedDataset,
+    ValidatePreparedDatasetCached,
+)
 
 
 def test_prepared_dataset_validation_accepts_opcua_fixture(opcua_prepared: Path):
@@ -43,6 +46,27 @@ def test_prepared_dataset_validation_reads_only_timestamp_column(
     assert report.ok
     assert calls
     assert all(columns == ["ts_ns"] for columns in calls)
+
+
+def test_prepared_validation_cache_hits_when_fingerprint_is_unchanged(
+    monkeypatch,
+    opcua_prepared: Path,
+    tmp_path: Path,
+):
+    cache_root = tmp_path / "cache"
+
+    first_report, first_cache = ValidatePreparedDatasetCached(opcua_prepared, cache_root).run()
+    assert first_report.ok
+    assert first_cache["validation_cache"] == "miss"
+
+    def fail_full_validation(_self):
+        raise AssertionError("full validation should not run on cache hit")
+
+    monkeypatch.setattr(ValidatePreparedDataset, "run", fail_full_validation)
+    second_report, second_cache = ValidatePreparedDatasetCached(opcua_prepared, cache_root).run()
+
+    assert second_report.ok
+    assert second_cache["validation_cache"] == "hit"
 
 
 def test_prepared_dataset_validation_reports_non_numeric_columns(tmp_path: Path):

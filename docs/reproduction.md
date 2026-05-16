@@ -105,6 +105,25 @@ itse reproduce stop --run out/reproduction/<run_id> --container <container-name>
 docker stop <container-name>
 ```
 
+## Performance Hardening
+
+Large real-data runs now include additive fast paths that preserve the public
+artifact contracts:
+
+- Score directories still contain one Parquet per run, plus an optional
+  `combined_scores.parquet` sidecar used by threshold calibration and evaluation.
+- Reproduction preflight and benchmark validation reuse a prepared-validation
+  cache under `out/cache/prepared-validation` when metadata and run-file
+  fingerprints are unchanged.
+- Torch detectors can score windows across runs in GPU batches; ForecastRidge
+  uses bounded CPU parallel scoring.
+- Docker runs can use the named-volume fast-I/O route documented in
+  [docker.md](docker.md) to avoid slow Windows bind-mounted tiny-file reads.
+
+`itse reproduce diagnose --run <run>` reports sidecar use, slowest experiments,
+and scoring telemetry so a slow slice can be optimized without changing the
+experiment budget.
+
 ## Artifacts
 
 ```text

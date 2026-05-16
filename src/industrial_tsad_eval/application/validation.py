@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -13,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from industrial_tsad_eval.domain.validation import ValidationReport
+from industrial_tsad_eval.infrastructure.json_utils import read_json, write_json
 from industrial_tsad_eval.infrastructure.prepared_repository import LocalPreparedDatasetRepository
 from industrial_tsad_eval.infrastructure.score_repository import LocalScoreRepository
 
@@ -63,6 +65,48 @@ class ValidatePreparedDataset:
 
         _validate_events(self.prepared / "events" / "events.jsonl", run_ranges, errors)
         return ValidationReport(self.prepared.name, str(self.prepared), errors, warnings)
+
+
+class ValidatePreparedDatasetCached:
+    """Cached Prepared Format validation for repeated reproduction preflights."""
+
+    def __init__(self, prepared: str | Path, cache_root: str | Path):
+        self.prepared = Path(prepared)
+        self.cache_root = Path(cache_root)
+
+    def run(self) -> tuple[ValidationReport, dict[str, Any]]:
+        """Return a validation report and cache telemetry."""
+        fingerprint = prepared_validation_fingerprint(self.prepared)
+        cache_path = self.cache_root / f"{fingerprint}.json"
+        if cache_path.exists():
+            payload = read_json(cache_path)
+            report_payload = dict(payload.get("report", {}))
+            report = ValidationReport(
+                subject=str(report_payload.get("subject", self.prepared.name)),
+                path=str(report_payload.get("path", self.prepared)),
+                errors=[str(item) for item in report_payload.get("errors", [])],
+                warnings=[str(item) for item in report_payload.get("warnings", [])],
+            )
+            return report, {
+                "validation_cache": "hit",
+                "fingerprint": fingerprint,
+                "cache_path": str(cache_path),
+            }
+        report = ValidatePreparedDataset(self.prepared).run()
+        write_json(
+            cache_path,
+            {
+                "format_version": "prepared-validation-cache-v1",
+                "fingerprint": fingerprint,
+                "prepared": str(self.prepared),
+                "report": report.to_dict(),
+            },
+        )
+        return report, {
+            "validation_cache": "miss",
+            "fingerprint": fingerprint,
+            "cache_path": str(cache_path),
+        }
 
 
 class ValidateScores:
@@ -269,3 +313,31 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Expected JSON object at {path}.")
     return payload
+
+
+def prepared_validation_fingerprint(prepared: str | Path) -> str:
+    """Hash metadata plus run file identity for safe validation-cache reuse."""
+    root = Path(prepared)
+    hasher = hashlib.sha256()
+    for relative in (
+        "meta/manifest.json",
+        "meta/schema.json",
+        "meta/splits.json",
+        "events/events.jsonl",
+    ):
+        path = root / relative
+        hasher.update(relative.encode())
+        if path.exists():
+            stat = path.stat()
+            hasher.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
+            hasher.update(path.read_bytes())
+        else:
+            hasher.update(b"missing")
+    runs_root = root / "runs"
+    parquet_paths = sorted(runs_root.rglob("timeseries.parquet")) if runs_root.exists() else []
+    for parquet_path in parquet_paths:
+        relative_path = parquet_path.relative_to(root).as_posix()
+        stat = parquet_path.stat()
+        hasher.update(relative_path.encode())
+        hasher.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode())
+    return hasher.hexdigest()

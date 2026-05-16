@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +26,7 @@ class ForecastRidgeConfig:
     lags: int = 1
     standardize: bool = True
     seed: int = 1337
+    score_workers: int = 4
 
 
 class ForecastRidgeDetector:
@@ -35,6 +38,7 @@ class ForecastRidgeDetector:
         self.scaler = StandardScaler() if config.standardize else None
         self.features: list[str] = []
         self.is_fitted = False
+        self._score_batch_telemetry: dict[str, Any] = {}
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the ridge forecaster on normal train and validation runs."""
@@ -94,6 +98,32 @@ class ForecastRidgeDetector:
             scores.append(float(np.mean(point_scores[start:end])))
         return pd.DataFrame({"ts_ns": window_ends, "score": scores})
 
+    def score_runs(
+        self,
+        repository: PreparedDatasetRepository,
+        run_ids: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Score runs with bounded CPU parallelism."""
+        workers = _resolved_score_workers(self.config.score_workers, len(run_ids))
+        if workers <= 1 or len(run_ids) <= 1:
+            output = {run_id: self.score_run(repository, run_id) for run_id in run_ids}
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                frames = executor.map(lambda run_id: self.score_run(repository, run_id), run_ids)
+                output = dict(zip(run_ids, frames, strict=True))
+        self._score_batch_telemetry = {
+            "mode": "cpu-parallel",
+            "workers": workers,
+            "run_count": len(run_ids),
+            "run_read_count": len(run_ids),
+            "total_windows": int(sum(len(frame) for frame in output.values())),
+        }
+        return output
+
+    def score_batch_telemetry(self) -> dict[str, Any]:
+        """Return telemetry from the most recent batch scoring call."""
+        return dict(self._score_batch_telemetry)
+
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
         return {
@@ -104,6 +134,7 @@ class ForecastRidgeDetector:
             "lags": self.config.lags,
             "standardize": self.config.standardize,
             "seed": self.config.seed,
+            "score_workers": self.config.score_workers,
             "feature_columns": list(self.features),
         }
 
@@ -144,6 +175,7 @@ class ForecastRidgePlugin:
             lags=int(params.get("lags", ForecastRidgeConfig.lags)),
             standardize=bool(params.get("standardize", ForecastRidgeConfig.standardize)),
             seed=int(params.get("seed", ForecastRidgeConfig.seed)),
+            score_workers=int(params.get("score_workers", ForecastRidgeConfig.score_workers)),
         )
         return ForecastRidgeDetector(detector_config)
 
@@ -171,3 +203,11 @@ def _protocol_split(repository: PreparedDatasetRepository, protocol: str) -> dic
         "val_runs": [str(run_id) for run_id in selected.get("val_runs", [])],
         "test_runs": [str(run_id) for run_id in selected.get("test_runs", [])],
     }
+
+
+def _resolved_score_workers(configured: int, run_count: int) -> int:
+    env_value = os.environ.get("INDUSTRIAL_TSAD_CPU_SCORE_WORKERS")
+    if env_value:
+        configured = int(env_value)
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(configured, run_count, cpu_count))

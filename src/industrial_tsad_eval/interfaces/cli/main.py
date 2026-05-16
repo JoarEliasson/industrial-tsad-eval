@@ -940,6 +940,7 @@ def reproduce_preflight(
             config=loaded,
             provider_registry=default_llm_provider_registry(),
             detector_registry=default_detector_registry(),
+            validation_cache_root=_preflight_validation_cache_root(out),
         ).run()
         write_json(out / "preflight.json", result)
     except (IndustrialTSADError, ValueError, RuntimeError, FileNotFoundError) as exc:
@@ -1134,6 +1135,12 @@ def _emit_validation(report: dict[str, Any]) -> None:
     console.print_json(data=report)
     if not bool(report.get("ok")):
         raise typer.Exit(1)
+
+
+def _preflight_validation_cache_root(out: Path) -> Path:
+    if out.parent.name == "preflight":
+        return out.parent.parent / "cache" / "prepared-validation"
+    return out.parent / "cache" / "prepared-validation"
 
 
 def _json_object(value: str | None) -> dict[str, Any]:

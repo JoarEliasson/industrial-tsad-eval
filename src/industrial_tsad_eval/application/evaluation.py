@@ -68,15 +68,15 @@ class EvaluateScores:
                 self.policy.threshold_quantile,
             )
         config = self.policy.to_config(threshold)
-        score_files = self.score_repository.discover()
+        score_frames = _score_frames(self.score_repository)
         pred_events_by_run: dict[str, list[PredEvent]] = {}
         run_durations_ns: dict[str, int] = {}
         window_count_by_run: dict[str, int] = {}
         score_timestamps_by_run: dict[str, np.ndarray] = {}
         score_values_by_run: dict[str, np.ndarray] = {}
 
-        for run_id in sorted(score_files):
-            score_frame = self.score_repository.read_run_scores(run_id)
+        for run_id in sorted(score_frames):
+            score_frame = score_frames[run_id]
             timestamps = score_frame["ts_ns"].to_numpy(dtype=np.int64)
             scores = score_frame["score"].to_numpy(dtype=np.float64)
             score_timestamps_by_run[run_id] = timestamps
@@ -117,6 +117,16 @@ class EvaluateScores:
             "protocol": self.protocol,
             "threshold": threshold,
             "policy": self.policy.to_dict(),
+            "score_io": {
+                "used_combined_scores": self.score_repository.has_combined_scores(),
+                "score_frame_source": (
+                    "combined_scores" if self.score_repository.has_combined_scores() else "per_run"
+                ),
+                "run_count": len(score_frames),
+                "per_run_score_file_reads": (
+                    0 if self.score_repository.has_combined_scores() else len(score_frames)
+                ),
+            },
         }
         compute_groups = set(config.compute)
         if "event" in compute_groups:
@@ -179,15 +189,33 @@ def _calibrate_threshold(
     q: float,
 ) -> float:
     score_arrays: list[np.ndarray] = []
-    available = score_repository.discover()
-    for run_id in run_ids:
-        if run_id not in available:
-            continue
-        scores = score_repository.read_run_scores(run_id)["score"].to_numpy(dtype=np.float64)
-        score_arrays.append(scores[~np.isnan(scores)])
+    if score_repository.has_combined_scores():
+        combined = score_repository.read_combined_scores(columns=["run_id", "score"])
+        mask = combined["run_id"].isin(set(run_ids))
+        scores = combined.loc[mask, "score"].to_numpy(dtype=np.float64)
+        if len(scores):
+            score_arrays.append(scores[~np.isnan(scores)])
+    else:
+        available = score_repository.discover()
+        for run_id in run_ids:
+            if run_id not in available:
+                continue
+            scores = score_repository.read_run_scores(run_id)["score"].to_numpy(dtype=np.float64)
+            score_arrays.append(scores[~np.isnan(scores)])
     if not score_arrays:
         raise ValueError("No train/validation scores available for threshold calibration.")
     return float(np.quantile(np.concatenate(score_arrays), q))
+
+
+def _score_frames(score_repository: LocalScoreRepository) -> dict[str, Any]:
+    if score_repository.has_combined_scores():
+        combined = score_repository.read_combined_scores(columns=["run_id", "ts_ns", "score"])
+        frames: dict[str, Any] = {}
+        for run_id, frame in combined.groupby("run_id", sort=True):
+            frames[str(run_id)] = frame.loc[:, ["ts_ns", "score"]].reset_index(drop=True)
+        return frames
+    score_files = score_repository.discover()
+    return {run_id: score_repository.read_run_scores(run_id) for run_id in sorted(score_files)}
 
 
 def _protocol_split(splits: dict[str, Any], protocol: str) -> dict[str, list[str]]:

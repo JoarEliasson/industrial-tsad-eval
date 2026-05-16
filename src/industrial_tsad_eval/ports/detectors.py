@@ -37,6 +37,17 @@ class DetectorExplainer(Protocol):
         """Return ranked explanation rows for a single run."""
 
 
+class DetectorBatchScorer(Protocol):
+    """Optional fitted detector interface for batch scoring multiple runs."""
+
+    def score_runs(
+        self,
+        repository: PreparedDatasetRepository,
+        run_ids: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Return Score Contract v1 rows for multiple runs."""
+
+
 class DetectorPlugin(Protocol):
     """Factory and metadata interface for a detector plugin."""
 

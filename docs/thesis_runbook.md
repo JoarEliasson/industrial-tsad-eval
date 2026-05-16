@@ -209,7 +209,22 @@ The assembled pack is provenance-rich and marked as assembled. It is useful when
 execution windows are limited; a single uninterrupted run remains the cleanest
 reporting route when practical.
 
-## 7. Expected Artifacts
+## 7. Fast-I/O Docker Option
+
+For TEP-scale slices on Windows, hydrate Docker named volumes before running so
+thousands of small Parquet reads stay inside Docker storage:
+
+```powershell
+.\scripts\Sync-ItseDockerFastIo.ps1 -Action hydrate
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto -FastIo run --name itse-tep-drcad-naive itse itse reproduce run-slice --config config\thesis_full.docker.toml --out out\reproduction --run-id tep-drcad-naive-fastio --datasets TEP --detectors drcad --protocols naive --stages benchmark,evidence,xai,assistant
+.\scripts\Sync-ItseDockerFastIo.ps1 -Action export
+```
+
+The run records `INDUSTRIAL_TSAD_DOCKER_IO_ROUTE=named-volume` in
+`resource_budget.json`. The normal bind-mount route remains simpler when you
+need live host-side access to every output file.
+
+## 8. Expected Artifacts
 
 ```text
 out/reproduction/<run_id>/

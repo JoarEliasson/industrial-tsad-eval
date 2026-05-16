@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ class ScoreRunsResult:
     protocol: str
     runs_scored: list[str]
     scores_dir: str
+    telemetry: dict[str, Any]
     fitted_detector: Detector | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -36,6 +38,7 @@ class ScoreRunsResult:
             "protocol": self.protocol,
             "runs_scored": list(self.runs_scored),
             "scores_dir": self.scores_dir,
+            "telemetry": dict(self.telemetry),
         }
 
 
@@ -75,9 +78,11 @@ class ScoreRuns:
         run_ids = _runs_for_protocol(self.prepared_repository.splits(), self.protocol)
         explanation_run_ids: list[str] = []
         write_futures: list[Any] = []
+        score_started = time.perf_counter()
+        scores_by_run = _score_runs(detector, self.prepared_repository, run_ids)
+        score_duration_s = round(time.perf_counter() - score_started, 6)
         with ThreadPoolExecutor(max_workers=self.write_workers) as executor:
-            for run_id in run_ids:
-                scores = detector.score_run(self.prepared_repository, run_id)
+            for run_id, scores in scores_by_run.items():
                 write_futures.append(
                     executor.submit(self.score_repository.write_run_scores, run_id, scores)
                 )
@@ -96,6 +101,28 @@ class ScoreRuns:
             for future in as_completed(write_futures):
                 future.result()
 
+        telemetry = self.score_repository.write_combined_scores(scores_by_run)
+        detector_telemetry: dict[str, Any] = getattr(
+            detector,
+            "score_batch_telemetry",
+            lambda: {},
+        )()
+        total_windows = _total_windows(detector_telemetry)
+        telemetry.update(
+            {
+                "per_run_score_files": len(scores_by_run),
+                "score_file_write_count": len(scores_by_run),
+                "score_write_workers": self.write_workers,
+                "batch_api_used": callable(getattr(detector, "score_runs", None)),
+                "score_duration_s": score_duration_s,
+                "score_windows_per_second": (
+                    round(total_windows / score_duration_s, 6)
+                    if total_windows is not None and score_duration_s > 0
+                    else None
+                ),
+                "detector_batch_telemetry": detector_telemetry,
+            }
+        )
         self.score_repository.write_manifest()
         self.explanation_repository.write_manifest()
         self.explanation_repository.write_metadata(
@@ -113,6 +140,7 @@ class ScoreRuns:
                 "protocol": self.protocol,
                 "runs_scored": run_ids,
                 "runs_explained": explanation_run_ids,
+                "scoring_telemetry": telemetry,
             }
         )
         return ScoreRunsResult(
@@ -121,6 +149,7 @@ class ScoreRuns:
             protocol=self.protocol,
             runs_scored=run_ids,
             scores_dir=str(self.score_repository.root),
+            telemetry=telemetry,
             fitted_detector=detector,
         )
 
@@ -138,6 +167,29 @@ def _runs_for_protocol(splits: dict[str, Any], protocol: str) -> list[str]:
                 ordered.append(run_text)
                 seen.add(run_text)
     return ordered
+
+
+def _score_runs(
+    detector: Detector,
+    repository: PreparedDatasetRepository,
+    run_ids: list[str],
+) -> dict[str, pd.DataFrame]:
+    score_runs = getattr(detector, "score_runs", None)
+    if callable(score_runs):
+        result = score_runs(repository, run_ids)
+        if not isinstance(result, dict):
+            raise TypeError("Detector batch score_runs must return a dict of run_id to DataFrame.")
+        return {str(run_id): frame for run_id, frame in result.items()}
+    return {run_id: detector.score_run(repository, run_id) for run_id in run_ids}
+
+
+def _total_windows(telemetry: Any) -> int | None:
+    if not isinstance(telemetry, dict):
+        return None
+    value = telemetry.get("total_windows")
+    if value is None:
+        return None
+    return int(value)
 
 
 def write_detector_explanations(

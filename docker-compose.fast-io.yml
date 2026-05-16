@@ -1,0 +1,15 @@
+services:
+  itse:
+    environment:
+      INDUSTRIAL_TSAD_DOCKER_IO_ROUTE: "named-volume"
+      INDUSTRIAL_TSAD_PREPARED_VOLUME: "industrial-tsad-eval-prepared-fast"
+      INDUSTRIAL_TSAD_OUT_VOLUME: "industrial-tsad-eval-out-fast"
+    volumes:
+      - industrial-tsad-eval-prepared-fast:/workspace/prepared
+      - industrial-tsad-eval-out-fast:/workspace/out
+      - ./prepared:/host/prepared:ro
+      - ./out:/host/out
+
+volumes:
+  industrial-tsad-eval-prepared-fast:
+  industrial-tsad-eval-out-fast:

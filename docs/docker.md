@@ -169,6 +169,35 @@ After preparing real datasets and editing the provider base URL to
 .\scripts\Invoke-ItseDocker.ps1 -Gpu auto run --rm itse itse reproduce status --run out/reproduction/thesis-verification-docker-YYYYMMDD
 ```
 
+## Fast I/O Route
+
+On Windows, thousands of small Parquet reads through bind mounts can dominate
+TEP-scale runs. The optional fast-I/O route keeps `prepared/` and `out/` in
+Docker named volumes, while `config/` and source code stay bind-mounted.
+
+Hydrate the volume from the host prepared roots:
+
+```powershell
+.\scripts\Sync-ItseDockerFastIo.ps1 -Action hydrate
+```
+
+Run commands with `-FastIo`:
+
+```powershell
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto -FastIo run --rm itse itse prepared validate --prepared prepared/TEP
+.\scripts\Invoke-ItseDocker.ps1 -Gpu auto -FastIo run --name itse-thesis-slice itse itse reproduce run-slice --config config/thesis_full.docker.toml --out out/reproduction --run-id tep-drcad-naive --datasets TEP --detectors drcad --protocols naive --stages benchmark,evidence,xai,assistant
+```
+
+Export generated `out/` artifacts back to the host:
+
+```powershell
+.\scripts\Sync-ItseDockerFastIo.ps1 -Action export
+```
+
+The route is recorded in `resource_budget.json` through
+`INDUSTRIAL_TSAD_DOCKER_IO_ROUTE=named-volume`. Use the normal bind-mount route
+when you need direct host file visibility during a live run.
+
 ## Resource Budget Artifact
 
 Record the intended execution budget alongside the run:
@@ -186,6 +215,7 @@ Record the intended execution budget alongside the run:
     "NUMEXPR_NUM_THREADS": 12
   },
   "docker_gpu_mode": "auto",
+  "docker_io_route": "bind-mounts or named-volume",
   "llama_base_url": "http://host.docker.internal:8080/v1",
   "llama_gpu_mode": "auto",
   "llama_gpu_layers": -1

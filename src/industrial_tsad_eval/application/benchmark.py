@@ -15,7 +15,11 @@ from typing import Any
 
 from industrial_tsad_eval.application.evaluation import EvaluateScores
 from industrial_tsad_eval.application.scoring import ScoreRuns, write_detector_explanations
-from industrial_tsad_eval.application.validation import ValidatePreparedDataset, ValidateScores
+from industrial_tsad_eval.application.validation import (
+    ValidatePreparedDataset,
+    ValidatePreparedDatasetCached,
+    ValidateScores,
+)
 from industrial_tsad_eval.domain.benchmark import (
     BenchmarkConfig,
     BenchmarkExperiment,
@@ -153,6 +157,7 @@ class RunBenchmark:
         progress_sink: ProgressSink | None = None,
         worker_count: int = 1,
         gpu_slots: int = 1,
+        validation_cache_root: str | Path | None = None,
     ):
         self.config = config
         self.detector_registry = detector_registry
@@ -162,6 +167,7 @@ class RunBenchmark:
         self.progress_sink = progress_sink
         self.worker_count = max(int(worker_count), 1)
         self.gpu_slots = max(int(gpu_slots), 0)
+        self.validation_cache_root = Path(validation_cache_root) if validation_cache_root else None
 
     def run(self) -> BenchmarkRunResult:
         """Execute the benchmark matrix and write run artifacts."""
@@ -189,7 +195,7 @@ class RunBenchmark:
             },
         )
 
-        validation_errors = _validate_datasets(self.config)
+        validation_errors = _validate_datasets(self.config, self.validation_cache_root)
         for ordinal, experiment in enumerate(experiments, start=1):
             progress.emit(
                 ProgressEvent(
@@ -615,10 +621,19 @@ def _progress_metrics(result: BenchmarkExperimentResult) -> dict[str, Any]:
     }
 
 
-def _validate_datasets(config: BenchmarkConfig) -> dict[str, list[str]]:
+def _validate_datasets(
+    config: BenchmarkConfig,
+    validation_cache_root: Path | None = None,
+) -> dict[str, list[str]]:
     errors: dict[str, list[str]] = {}
     for dataset_config in config.datasets:
-        report = ValidatePreparedDataset(dataset_config.prepared).run()
+        if validation_cache_root is None:
+            report = ValidatePreparedDataset(dataset_config.prepared).run()
+        else:
+            report, _cache_details = ValidatePreparedDatasetCached(
+                dataset_config.prepared,
+                validation_cache_root,
+            ).run()
         if not report.ok:
             errors[dataset_config.id] = report.errors
     return errors

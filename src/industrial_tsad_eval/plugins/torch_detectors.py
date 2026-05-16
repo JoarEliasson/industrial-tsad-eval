@@ -211,6 +211,7 @@ class ForecastLSTMDetector:
         self.standardizer = FeatureStandardizer(enabled=False)
         self.train_window_count = 0
         self.training_losses: list[float] = []
+        self._score_batch_telemetry: dict[str, Any] = {}
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the LSTM forecaster on normal train and validation runs."""
@@ -255,6 +256,26 @@ class ForecastLSTMDetector:
             return empty_score_frame()
         return score_frame(ts_ns, target_indices, scores)
 
+    def score_runs(
+        self,
+        repository: PreparedDatasetRepository,
+        run_ids: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Score multiple runs with cross-run GPU batches."""
+        frames, telemetry = _score_forecast_runs_batched(
+            detector=self,
+            repository=repository,
+            run_ids=run_ids,
+            input_layout="time_feature",
+            absolute=False,
+        )
+        self._score_batch_telemetry = telemetry
+        return frames
+
+    def score_batch_telemetry(self) -> dict[str, Any]:
+        """Return telemetry from the most recent batch scoring call."""
+        return dict(self._score_batch_telemetry)
+
     def metadata(self) -> dict[str, Any]:
         """Return detector metadata for score artifact provenance."""
         return _metadata(
@@ -282,6 +303,7 @@ class DRADetector:
         self.train_window_count = 0
         self.training_losses: list[float] = []
         self._last_score_context: _ScoreContext | None = None
+        self._score_batch_telemetry: dict[str, Any] = {}
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the TCN forecaster on normal train and validation runs."""
@@ -326,6 +348,26 @@ class DRADetector:
             return empty_score_frame()
         self._last_score_context = _ScoreContext(run_id, target_indices, scores)
         return score_frame(ts_ns, target_indices, scores)
+
+    def score_runs(
+        self,
+        repository: PreparedDatasetRepository,
+        run_ids: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Score multiple runs with cross-run GPU batches."""
+        frames, telemetry = _score_forecast_runs_batched(
+            detector=self,
+            repository=repository,
+            run_ids=run_ids,
+            input_layout="feature_time",
+            absolute=True,
+        )
+        self._score_batch_telemetry = telemetry
+        return frames
+
+    def score_batch_telemetry(self) -> dict[str, Any]:
+        """Return telemetry from the most recent batch scoring call."""
+        return dict(self._score_batch_telemetry)
 
     def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
         """Explain one prepared run using residual-weighted input gradients."""
@@ -413,6 +455,7 @@ class InterFusionDetector:
         self.train_window_count = 0
         self.training_losses: list[float] = []
         self._last_score_context: _ScoreContext | None = None
+        self._score_batch_telemetry: dict[str, Any] = {}
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the HVAE on normal train and validation windows."""
@@ -447,6 +490,24 @@ class InterFusionDetector:
             return empty_score_frame()
         self._last_score_context = _ScoreContext(run_id, end_indices, scores)
         return score_frame(ts_ns, end_indices, scores)
+
+    def score_runs(
+        self,
+        repository: PreparedDatasetRepository,
+        run_ids: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Score multiple runs with cross-run GPU batches."""
+        frames, telemetry = _score_window_runs_batched(
+            detector=self,
+            repository=repository,
+            run_ids=run_ids,
+        )
+        self._score_batch_telemetry = telemetry
+        return frames
+
+    def score_batch_telemetry(self) -> dict[str, Any]:
+        """Return telemetry from the most recent batch scoring call."""
+        return dict(self._score_batch_telemetry)
 
     def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
         """Explain one prepared run using Monte Carlo reconstruction/imputation error."""
@@ -527,6 +588,7 @@ class DRCADDetector:
         self.train_window_count = 0
         self.training_losses: list[float] = []
         self._last_score_context: _ScoreContext | None = None
+        self._score_batch_telemetry: dict[str, Any] = {}
 
     def train(self, repository: PreparedDatasetRepository, protocol: str) -> None:
         """Fit the dual-view contrastive model on normal windows."""
@@ -566,6 +628,24 @@ class DRCADDetector:
             return empty_score_frame()
         self._last_score_context = _ScoreContext(run_id, end_indices, scores)
         return score_frame(ts_ns, end_indices, scores)
+
+    def score_runs(
+        self,
+        repository: PreparedDatasetRepository,
+        run_ids: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Score multiple runs with cross-run GPU batches."""
+        frames, telemetry = _score_window_runs_batched(
+            detector=self,
+            repository=repository,
+            run_ids=run_ids,
+        )
+        self._score_batch_telemetry = telemetry
+        return frames
+
+    def score_batch_telemetry(self) -> dict[str, Any]:
+        """Return telemetry from the most recent batch scoring call."""
+        return dict(self._score_batch_telemetry)
 
     def explain_run(self, repository: PreparedDatasetRepository, run_id: str) -> pd.DataFrame:
         """Explain one prepared run using counterfactual reconstruction deltas."""
@@ -775,6 +855,157 @@ def _score_window_run(
     if not index_parts:
         return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.int64)
     return np.concatenate(score_parts), np.concatenate(index_parts)
+
+
+def _score_forecast_runs_batched(
+    *,
+    detector: Any,
+    repository: PreparedDatasetRepository,
+    run_ids: list[str],
+    input_layout: str,
+    absolute: bool,
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
+    torch, model = _fitted(detector)
+    frames: dict[str, pd.DataFrame] = {}
+    parts: list[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    pending_windows = 0
+    batch_count = 0
+    max_batch_windows = 0
+    total_windows = 0
+
+    def flush() -> None:
+        nonlocal batch_count, max_batch_windows, pending_windows, total_windows
+        if not parts:
+            return
+        x = np.concatenate([part[2] for part in parts], axis=0)
+        y = np.concatenate([part[3] for part in parts], axis=0)
+        scores = _score_forecast_model(
+            torch,
+            model,
+            x,
+            y,
+            detector.config.common,
+            detector.device,
+            input_layout=input_layout,
+            absolute=absolute,
+        )
+        batch_count += 1
+        max_batch_windows = max(max_batch_windows, int(x.shape[0]))
+        total_windows += int(x.shape[0])
+        offset = 0
+        for run_id, ts_ns, part_x, _part_y, target_indices in parts:
+            count = int(part_x.shape[0])
+            frame = score_frame(ts_ns, target_indices, scores[offset : offset + count])
+            frames[run_id] = (
+                pd.concat([frames[run_id], frame], ignore_index=True) if run_id in frames else frame
+            )
+            offset += count
+        parts.clear()
+        pending_windows = 0
+
+    for run_id in run_ids:
+        data, ts_ns = read_feature_array(repository, run_id, detector.features)
+        data = detector.standardizer.transform(data)
+        has_windows = False
+        for x, y, target_indices in forecast_window_batches(
+            data,
+            window=detector.config.common.window,
+            stride=detector.config.common.score_stride,
+            batch_size=detector.config.common.score_batch_size,
+        ):
+            has_windows = True
+            parts.append((run_id, ts_ns, x, y, target_indices))
+            pending_windows += int(x.shape[0])
+            if pending_windows >= detector.config.common.score_batch_size:
+                flush()
+        if not has_windows:
+            frames[run_id] = empty_score_frame()
+    flush()
+    return _ordered_frames(frames, run_ids), {
+        "mode": "cross-run-gpu-batch",
+        "run_count": len(run_ids),
+        "run_read_count": len(run_ids),
+        "batch_count": batch_count,
+        "max_batch_windows": max_batch_windows,
+        "total_windows": total_windows,
+        "score_batch_size": detector.config.common.score_batch_size,
+    }
+
+
+def _score_window_runs_batched(
+    *,
+    detector: Any,
+    repository: PreparedDatasetRepository,
+    run_ids: list[str],
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any]]:
+    torch, model = _fitted(detector)
+    frames: dict[str, pd.DataFrame] = {}
+    parts: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+    pending_windows = 0
+    batch_count = 0
+    max_batch_windows = 0
+    total_windows = 0
+
+    def flush() -> None:
+        nonlocal batch_count, max_batch_windows, pending_windows, total_windows
+        if not parts:
+            return
+        x = np.concatenate([part[2] for part in parts], axis=0)
+        scores = _score_window_model(
+            torch,
+            model,
+            x,
+            detector.config.common,
+            detector.device,
+        )
+        batch_count += 1
+        max_batch_windows = max(max_batch_windows, int(x.shape[0]))
+        total_windows += int(x.shape[0])
+        offset = 0
+        for run_id, ts_ns, part_x, end_indices in parts:
+            count = int(part_x.shape[0])
+            frame = score_frame(ts_ns, end_indices, scores[offset : offset + count])
+            frames[run_id] = (
+                pd.concat([frames[run_id], frame], ignore_index=True) if run_id in frames else frame
+            )
+            offset += count
+        parts.clear()
+        pending_windows = 0
+
+    for run_id in run_ids:
+        data, ts_ns = read_feature_array(repository, run_id, detector.features)
+        data = detector.standardizer.transform(data)
+        has_windows = False
+        for x, end_indices in window_end_batches(
+            data,
+            window=detector.config.common.window,
+            stride=detector.config.common.score_stride,
+            batch_size=detector.config.common.score_batch_size,
+        ):
+            has_windows = True
+            parts.append((run_id, ts_ns, x, end_indices))
+            pending_windows += int(x.shape[0])
+            if pending_windows >= detector.config.common.score_batch_size:
+                flush()
+        if not has_windows:
+            frames[run_id] = empty_score_frame()
+    flush()
+    return _ordered_frames(frames, run_ids), {
+        "mode": "cross-run-gpu-batch",
+        "run_count": len(run_ids),
+        "run_read_count": len(run_ids),
+        "batch_count": batch_count,
+        "max_batch_windows": max_batch_windows,
+        "total_windows": total_windows,
+        "score_batch_size": detector.config.common.score_batch_size,
+    }
+
+
+def _ordered_frames(
+    frames: dict[str, pd.DataFrame],
+    run_ids: list[str],
+) -> dict[str, pd.DataFrame]:
+    return {run_id: frames.get(run_id, empty_score_frame()) for run_id in run_ids}
 
 
 def _selected_explanation_indices(

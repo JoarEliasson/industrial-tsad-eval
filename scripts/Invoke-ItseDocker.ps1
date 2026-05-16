@@ -2,6 +2,8 @@ param(
     [ValidateSet("auto", "on", "off")]
     [string]$Gpu = "auto",
 
+    [switch]$FastIo,
+
     [switch]$DryRun,
 
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -71,9 +73,14 @@ if ($gpuSelected) {
     $composeFiles += @("-f", (Join-Path $repoRoot "docker-compose.gpu.yml"))
 }
 
+if ($FastIo) {
+    $composeFiles += @("-f", (Join-Path $repoRoot "docker-compose.fast-io.yml"))
+}
+
 $command = @("docker", "compose") + $composeFiles + $ComposeArgs
 
 Write-Host "Docker GPU route: $(if ($gpuSelected) { 'enabled' } else { 'disabled' }) ($gpuReason)"
+Write-Host "Docker I/O route: $(if ($FastIo) { 'named-volume fast I/O' } else { 'bind mounts' })"
 Write-Host "Command: $(Join-CommandLine $command)"
 
 if ($DryRun) {
