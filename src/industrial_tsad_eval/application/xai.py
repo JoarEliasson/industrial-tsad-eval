@@ -38,6 +38,7 @@ class EvaluateEvidenceConfig:
     out: str | Path
     ks: list[int]
     protocol: str = "naive"
+    validate_inputs: bool = True
 
 
 class EvaluateEvidence:
@@ -50,7 +51,11 @@ class EvaluateEvidence:
         """Compute explanation-quality metrics and write report artifacts."""
         if not self.config.ks or any(k <= 0 for k in self.config.ks):
             raise ValueError("ks must contain one or more positive integers.")
-        evidence_report = ValidateEvidence(self.config.prepared, self.config.evidence).run()
+        evidence_report = ValidateEvidence(
+            self.config.prepared,
+            self.config.evidence,
+            validate_prepared=self.config.validate_inputs,
+        ).run()
         if not evidence_report.ok:
             raise XAIEvaluationError(f"Evidence validation failed: {evidence_report.errors}")
         gt_report = ValidateGroundTruthTagMap(self.config.gt_map).run()

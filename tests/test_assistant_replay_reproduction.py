@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -11,6 +12,12 @@ from industrial_tsad_eval.application import reproduction as reproduction_module
 from industrial_tsad_eval.application.assistant_replay import (
     RunAssistantReplaySuite,
     _claims_from_draft,
+    _effective_prompt_budget_chars,
+    _planner_hit_max_chars,
+    _planner_max_tokens,
+    _planner_payload_for_case,
+    _planner_query_max_chars,
+    _referee_max_tokens,
     _referee_request_for_claim,
 )
 from industrial_tsad_eval.application.evaluation import EvaluateScores
@@ -65,7 +72,75 @@ def test_provider_registry_contains_reproducibility_and_cloud_shapes():
     assert llama.model == "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
     assert llama.base_url == "http://127.0.0.1:8080/v1"
     assert llama.extra["structured_output_mode"] == "json_object"
+    assert llama.extra["structured_output_allow_fallback"] is False
+    assert llama.extra["planner_query_max_chars"] == 360
     assert registry.get("fake").create(registry.get("fake").default_config()).healthcheck().ok
+
+
+def test_llama_cpp_assistant_requests_are_context_budgeted():
+    config = AssistantReplayConfig(
+        suite_id="budgeted",
+        prepared="prepared/TEP",
+        provider=LLMProviderConfig(
+            name="llama-cpp",
+            model="stub-model",
+            max_tokens=700,
+            extra={"context_window_tokens": 4096},
+        ),
+        prompt_budget_chars=12000,
+    )
+    case = replace(
+        _assistant_case("TEP", "event-1"),
+        query=" ".join(["Check Plant/TEP/XMV_09 using cited evidence only."] * 40),
+    )
+    retrieval = OperatorRetrievalResult(
+        query=OperatorQuery(query=case.query),
+        hits=[
+            OperatorEvidenceHit(
+                source_id=f"hit-{idx}",
+                source_type="evidence_bundle",
+                title="top variables",
+                role="top_variables",
+                rank=idx + 1,
+                score=1.0,
+                text="Plant/TEP/XMV_09 " + ("supporting evidence " * 500),
+                citation_id=f"C{idx + 1}",
+                dataset="TEP",
+                event_id=case.event_id,
+                run_id=case.run_id,
+            )
+            for idx in range(8)
+        ],
+    )
+
+    planner_max_tokens = _planner_max_tokens(config)
+    prompt_budget = _effective_prompt_budget_chars(config, planner_max_tokens)
+    payload, budget = _planner_payload_for_case(
+        case,
+        retrieval,
+        prompt_budget,
+        max_hit_chars=_planner_hit_max_chars(config),
+        max_query_chars=_planner_query_max_chars(config),
+    )
+
+    assert planner_max_tokens == 256
+    assert _referee_max_tokens(config) == 128
+    assert prompt_budget < config.prompt_budget_chars
+    assert budget["query_truncated"] == 1
+    assert budget["truncation_count"] > 0
+    assert payload["task"].endswith("...")
+    assert len(payload["task"]) <= 363
+    assert payload["case"] == {
+        "case_id": case.case_id,
+        "dataset": case.dataset,
+        "run_id": case.run_id,
+        "event_id": case.event_id,
+        "top_variables": case.top_variables,
+    }
+    assert "evidence_relative_path" not in payload["case"]
+    assert payload["evidence_summary"]["retrieval_hit_count"] <= 8
+    assert all(len(hit["text"]) <= 603 for hit in payload["retrieval_hits"])
+    assert all("source_id" not in hit for hit in payload["retrieval_hits"])
 
 
 def test_openai_compatible_provider_protocol_with_local_stub():

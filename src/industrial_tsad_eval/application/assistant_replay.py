@@ -61,24 +61,14 @@ PLANNER_SYSTEM_PROMPT = """You are the Planner for an operator-facing industrial
 Return JSON matching DraftResponse only.
 
 Rules:
-- Use only the provided retrieval hits and evidence_summary.
-- No outside knowledge, speculation, fabricated thresholds, or ungrounded advice.
-- If evidence is weak, stay conservative.
-- symptom_summary: exactly one neutral evidence-grounded sentence, never an instruction. Keep it high-level; do not enumerate more than two named targets there. Put named targets in checks. Never use should/check/inspect/verify/monitor/review/examine there.
-- If retrieved evidence only ranks variables or artifacts, set symptom_summary to an empty string and put the named variables in checks.
-- checks: bounded inspection or verification steps tied to named evidence targets.
-- recommended_actions: bounded actions beyond checking only when explicitly supported.
-- If a technical_pdf, manual_pdf, public_testbed_operating_doc, or response_playbook hit directly states a general detection, monitoring, response, or documentation action, you may include one short checks/recommended_actions/escalation_criteria item grounded in that document.
-- Prefer exact document wording such as "Detect security events and incidents" only when that phrase is present in the retrieved chunk.
-- Do not infer who to notify, timing, or organizational roles from a document unless the chunk states that exact instruction.
-- likely_causes: optional evidence-bound causes, never action language.
-- escalation_criteria: optional triggers or handoff conditions, not ordinary recommendations.
-- Each list item must be a short atomic string with exactly one claim or instruction.
-- Prefer leaving a section empty over writing an unsupported item.
-- If evidence only names salient variables or artifacts, checks may simply say "Check <target>."
-- Bad symptom_summary example: "Check Plant/TEP/XMEAS_28."
-- Good symptom_summary example: "The plant shows abnormal measurements and valve positions."
-- Do not mention current, baseline, expected, status, threshold, compare, restart, or adjust unless those terms are explicitly present in the evidence.
+- Use only evidence_summary and retrieval_hits; no outside knowledge or fabricated thresholds.
+- Be conservative: leave unsupported sections empty.
+- symptom_summary: zero or one neutral evidence-grounded sentence, never an instruction. If evidence only ranks variables or artifacts, use an empty string.
+- checks: short inspection steps tied to named evidence targets. If evidence only names salient variables, write "Check <target>."
+- likely_causes: optional evidence-bound causes, not actions.
+- recommended_actions and escalation_criteria: include only when a retrieved technical document, operating guide, playbook, or evidence text directly states the action/trigger.
+- Each list item must be short, atomic, and contain one claim or instruction.
+- Do not mention current, baseline, expected, status, threshold, compare, restart, notify, timing, or roles unless those exact terms are in the evidence.
 - Return no markdown and no commentary.
 """
 REFEREE_SYSTEM_PROMPT = """You are the Referee for an operator-facing industrial assistant.
@@ -249,10 +239,13 @@ class RunAssistantCase:
             playbooks=playbooks,
             top_k=self.config.top_k,
         ).run()
+        planner_max_tokens = _planner_max_tokens(self.config)
         planner_payload, budget = _planner_payload_for_case(
             self.case,
             retrieval,
-            self.config.prompt_budget_chars,
+            _effective_prompt_budget_chars(self.config, planner_max_tokens),
+            max_hit_chars=_planner_hit_max_chars(self.config),
+            max_query_chars=_planner_query_max_chars(self.config),
         )
         planner_request = LLMStructuredRequest(
             messages=[
@@ -261,8 +254,12 @@ class RunAssistantCase:
             ],
             schema_name="DraftResponse",
             json_schema=DraftResponse.model_json_schema(),
-            max_tokens=self.config.provider.max_tokens,
-            metadata={"case_id": self.case.case_id, "suite_id": self.config.suite_id},
+            max_tokens=planner_max_tokens,
+            metadata={
+                "case_id": self.case.case_id,
+                "suite_id": self.config.suite_id,
+                "prompt_budget": budget,
+            },
         )
         provider = self.provider_registry.get(self.config.provider.name).create(
             self.config.provider
@@ -688,8 +685,40 @@ def _planner_payload_for_case(
     case: AssistantCase,
     retrieval: OperatorRetrievalResult,
     prompt_budget_chars: int,
+    *,
+    max_hit_chars: int | None = None,
+    max_query_chars: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, int]]:
-    used_chars = len(case.query)
+    query = case.query.strip()
+    query_truncated = 0
+    if max_query_chars is not None and len(query) > max_query_chars:
+        query = query[:max_query_chars].rstrip() + "..."
+        query_truncated = 1
+    compact_case = {
+        "case_id": case.case_id,
+        "dataset": case.dataset,
+        "run_id": case.run_id,
+        "event_id": case.event_id,
+        "top_variables": case.top_variables,
+    }
+    evidence_summary = {
+        "dataset": case.dataset,
+        "run_id": case.run_id,
+        "event_id": case.event_id,
+        "top_variables": case.top_variables,
+        "retrieval_hit_count": 0,
+    }
+    used_chars = len(
+        json.dumps(
+            {
+                "task": query,
+                "case": compact_case,
+                "evidence_summary": evidence_summary,
+                "retrieval_hits": [],
+            },
+            sort_keys=True,
+        )
+    )
     truncation_count = 0
     overflow_count = 0
     hits: list[dict[str, Any]] = []
@@ -699,17 +728,18 @@ def _planner_payload_for_case(
         if allowance <= 0:
             overflow_count += 1
             continue
-        if len(text) > allowance:
-            text = text[: max(allowance, 0)].rstrip() + "..."
+        text_limit = allowance
+        if max_hit_chars is not None:
+            text_limit = min(text_limit, max_hit_chars)
+        if len(text) > text_limit:
+            text = text[: max(text_limit, 0)].rstrip() + "..."
             truncation_count += 1
         payload = {
             "citation_id": hit.citation_id,
-            "source_id": hit.source_id,
             "source_type": hit.source_type,
             "title": hit.title,
             "role": hit.role,
             "rank": hit.rank,
-            "score": hit.score,
             "dataset": hit.dataset,
             "event_id": hit.event_id,
             "run_id": hit.run_id,
@@ -717,24 +747,69 @@ def _planner_payload_for_case(
         }
         hits.append(payload)
         used_chars += len(json.dumps(payload, sort_keys=True))
+    evidence_summary["retrieval_hit_count"] = len(hits)
     return (
         {
-            "query": case.query,
-            "case": case.to_dict(),
-            "evidence_summary": {
-                "dataset": case.dataset,
-                "run_id": case.run_id,
-                "event_id": case.event_id,
-                "top_variables": case.top_variables,
-                "retrieval_hit_count": len(hits),
-            },
+            "task": query,
+            "case": compact_case,
+            "evidence_summary": evidence_summary,
             "retrieval_hits": hits,
         },
         {
+            "effective_prompt_budget_chars": prompt_budget_chars,
             "truncation_count": truncation_count,
             "overflow_count": overflow_count,
+            "query_truncated": query_truncated,
         },
     )
+
+
+def _planner_max_tokens(config: AssistantReplayConfig) -> int:
+    extra = config.provider.extra
+    default_max = 256 if config.provider.name == "llama-cpp" else config.provider.max_tokens
+    configured = int(extra.get("planner_max_tokens", default_max))
+    return max(64, min(config.provider.max_tokens, configured))
+
+
+def _referee_max_tokens(config: AssistantReplayConfig) -> int:
+    extra = config.provider.extra
+    default_max = 128 if config.provider.name == "llama-cpp" else 512
+    configured = int(extra.get("referee_max_tokens", default_max))
+    return max(64, min(config.provider.max_tokens, configured))
+
+
+def _planner_hit_max_chars(config: AssistantReplayConfig) -> int | None:
+    value = config.provider.extra.get("hit_max_chars")
+    if value is None and config.provider.name == "llama-cpp":
+        return 300
+    if value is None:
+        return None
+    return max(120, int(value))
+
+
+def _planner_query_max_chars(config: AssistantReplayConfig) -> int | None:
+    value = config.provider.extra.get("planner_query_max_chars")
+    if value is None and config.provider.name == "llama-cpp":
+        return 360
+    if value is None:
+        return None
+    return max(120, int(value))
+
+
+def _effective_prompt_budget_chars(
+    config: AssistantReplayConfig,
+    max_tokens: int,
+) -> int:
+    requested = config.prompt_budget_chars
+    extra = config.provider.extra
+    context_window = int(extra.get("context_window_tokens", 4096))
+    if config.provider.name != "llama-cpp" and "context_window_tokens" not in extra:
+        return requested
+    reserve_tokens = int(extra.get("prompt_context_reserve_tokens", 768))
+    chars_per_token = float(extra.get("prompt_chars_per_token", 1.4))
+    available_tokens = context_window - max_tokens - reserve_tokens
+    context_budget = max(2000, int(max(available_tokens, 1) * chars_per_token))
+    return min(requested, context_budget)
 
 
 def _claims_from_draft(
@@ -886,7 +961,7 @@ def _referee_request_for_claim(
         ],
         schema_name="ClaimEvaluation",
         json_schema=ClaimEvaluation.model_json_schema(),
-        max_tokens=min(config.provider.max_tokens, 512),
+        max_tokens=_referee_max_tokens(config),
         metadata={
             "case_id": case.case_id,
             "claim_id": claim.claim_id,

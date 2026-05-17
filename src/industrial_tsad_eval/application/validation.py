@@ -131,6 +131,16 @@ class ValidateScores:
         if not score_files:
             errors.append(f"No score files found in {self.score_repository.root}")
 
+        if self.score_repository.has_combined_scores():
+            _validate_combined_scores(
+                self.score_repository,
+                score_files,
+                valid_runs,
+                errors,
+                warnings,
+            )
+            return ValidationReport(subject, str(self.score_repository.root), errors, warnings)
+
         for run_id, score_path in sorted(score_files.items()):
             if run_id not in valid_runs:
                 errors.append(f"Score file references unknown run_id: {run_id}")
@@ -146,6 +156,41 @@ class ValidateScores:
             _validate_score_frame(run_id, frame, errors, warnings)
 
         return ValidationReport(subject, str(self.score_repository.root), errors, warnings)
+
+
+def _validate_combined_scores(
+    repository: LocalScoreRepository,
+    score_files: dict[str, Path],
+    valid_runs: set[str],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    for run_id, score_path in sorted(score_files.items()):
+        if run_id not in valid_runs:
+            errors.append(f"Score file references unknown run_id: {run_id}")
+        if not score_path.exists():
+            errors.append(f"Score file path does not exist: {score_path}")
+    try:
+        combined = repository.read_combined_scores(columns=["run_id", "ts_ns", "score"])
+    except Exception as exc:
+        errors.append(f"combined_scores.parquet: failed to read parquet: {exc}")
+        return
+    for column in ("run_id", "ts_ns", "score"):
+        if column not in combined.columns:
+            errors.append(f"combined_scores.parquet: missing required column {column!r}")
+            return
+    combined_runs = {str(run_id) for run_id in combined["run_id"].dropna().unique()}
+    unknown_runs = sorted(combined_runs - valid_runs)
+    if unknown_runs:
+        errors.append(f"combined_scores.parquet references unknown run_id: {unknown_runs[:10]}")
+    missing_from_sidecar = sorted(set(score_files) - combined_runs)
+    if missing_from_sidecar:
+        errors.append(
+            "combined_scores.parquet missing run_id entries for score files: "
+            f"{missing_from_sidecar[:10]}"
+        )
+    for run_id, frame in combined.groupby("run_id", sort=True):
+        _validate_score_frame(str(run_id), frame.loc[:, ["ts_ns", "score"]], errors, warnings)
 
 
 def _schema_browse_paths(schema_path: Path) -> set[str]:

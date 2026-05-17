@@ -471,7 +471,16 @@ def default_llm_provider_registry() -> LLMProviderRegistry:
             default_api_key_env=None,
             requires_api_key=False,
             description="Local llama.cpp OpenAI-compatible chat server.",
-            default_extra={"structured_output_mode": "json_object"},
+            default_extra={
+                "structured_output_mode": "json_object",
+                "structured_output_allow_fallback": False,
+                "context_window_tokens": 4096,
+                "planner_max_tokens": 256,
+                "referee_max_tokens": 128,
+                "hit_max_chars": 300,
+                "planner_query_max_chars": 360,
+                "prompt_chars_per_token": 1.4,
+            },
         )
     )
     registry.register(

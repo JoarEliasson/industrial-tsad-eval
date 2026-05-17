@@ -51,3 +51,26 @@ def test_score_repository_combined_sidecar_round_trips_and_is_not_a_run(tmp_path
     assert repository.discover() == {
         "plant/run_001": tmp_path / "scores" / "plant__run_001.parquet"
     }
+
+
+def test_score_validation_uses_combined_sidecar_when_present(
+    monkeypatch,
+    opcua_prepared: Path,
+    tmp_path: Path,
+):
+    scores = tmp_path / "scores_sidecar_validate"
+    ScoreRuns(
+        detector_registry=default_detector_registry(),
+        prepared=opcua_prepared,
+        scores=scores,
+        detector_name="forecast-ridge",
+        detector_parameters={"window": 24, "stride": 4, "lags": 1},
+    ).run()
+
+    def fail_per_run_read(*_args, **_kwargs):
+        raise AssertionError("per-run score validation reads should not be used with sidecar")
+
+    monkeypatch.setattr(LocalScoreRepository, "read_run_scores", fail_per_run_read)
+    report = ValidateScores(opcua_prepared, scores).run()
+
+    assert report.ok

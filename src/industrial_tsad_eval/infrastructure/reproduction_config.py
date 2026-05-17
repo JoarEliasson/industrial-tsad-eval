@@ -192,7 +192,7 @@ query_template = "__THESIS_assistant replay_QUERY__"
 name = "llama-cpp"
 model = "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
 base_url = "http://127.0.0.1:8080/v1"
-timeout_s = 180.0
+timeout_s = 600.0
 temperature = 0.0
 top_p = 1.0
 max_tokens = 700
@@ -200,6 +200,13 @@ seed = 1337
 
 [assistant.provider.extra]
 structured_output_mode = "json_object"
+structured_output_allow_fallback = false
+context_window_tokens = 4096
+planner_max_tokens = 256
+referee_max_tokens = 128
+hit_max_chars = 300
+planner_query_max_chars = 360
+prompt_chars_per_token = 1.4
 gpu_offload_required = true
 gpu_layers = -1
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
@@ -319,7 +326,7 @@ query_template = "__THESIS_assistant replay_QUERY__"
 name = "llama-cpp"
 model = "Qwen2.5-7B-Instruct-GGUF-Q4_K_M"
 base_url = "http://127.0.0.1:8080/v1"
-timeout_s = 180.0
+timeout_s = 600.0
 temperature = 0.0
 top_p = 1.0
 max_tokens = 700
@@ -327,6 +334,13 @@ seed = 1337
 
 [assistant.provider.extra]
 structured_output_mode = "json_object"
+structured_output_allow_fallback = false
+context_window_tokens = 4096
+planner_max_tokens = 256
+referee_max_tokens = 128
+hit_max_chars = 300
+planner_query_max_chars = 360
+prompt_chars_per_token = 1.4
 gpu_offload_required = true
 gpu_layers = -1
 """.replace("__THESIS_assistant replay_QUERY__", THESIS_ASSISTANT_QUERY_TOML)
@@ -351,6 +365,13 @@ seed = 1337
 
 [assistant.provider.extra]
 structured_output_mode = "json_object"
+structured_output_allow_fallback = false
+context_window_tokens = 4096
+planner_max_tokens = 256
+referee_max_tokens = 128
+hit_max_chars = 300
+planner_query_max_chars = 360
+prompt_chars_per_token = 1.4
 gpu_offload_required = true
 gpu_layers = -1
 

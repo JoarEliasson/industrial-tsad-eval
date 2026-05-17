@@ -134,6 +134,7 @@ class GenerateEvidence:
         max_events: int = 100,
         explanation_source: str = "auto",
         native_missing_policy: str = "skip_bundle",
+        validate_inputs: bool = True,
     ):
         self.prepared = Path(prepared)
         self.scores = Path(scores)
@@ -145,6 +146,7 @@ class GenerateEvidence:
         self.max_events = max_events
         self.explanation_source = _explanation_source(explanation_source)
         self.native_missing_policy = _native_missing_policy(native_missing_policy)
+        self.validate_inputs = validate_inputs
 
     def run(self) -> GenerateEvidenceResult:
         """Generate bundles and write evidence artifacts."""
@@ -152,12 +154,13 @@ class GenerateEvidence:
             raise ValueError("top_k must be greater than 0.")
         if self.max_events <= 0:
             raise ValueError("max_events must be greater than 0.")
-        prepared_report = ValidatePreparedDataset(self.prepared).run()
-        if not prepared_report.ok:
-            raise EvidenceError(f"Prepared dataset validation failed: {prepared_report.errors}")
-        score_report = ValidateScores(self.prepared, self.scores).run()
-        if not score_report.ok:
-            raise EvidenceError(f"Score validation failed: {score_report.errors}")
+        if self.validate_inputs:
+            prepared_report = ValidatePreparedDataset(self.prepared).run()
+            if not prepared_report.ok:
+                raise EvidenceError(f"Prepared dataset validation failed: {prepared_report.errors}")
+            score_report = ValidateScores(self.prepared, self.scores).run()
+            if not score_report.ok:
+                raise EvidenceError(f"Score validation failed: {score_report.errors}")
 
         prepared_repository = LocalPreparedDatasetRepository(self.prepared)
         score_repository = LocalScoreRepository(self.scores)
@@ -208,18 +211,20 @@ class GenerateEvidence:
 class ValidateEvidence:
     """Validate Evidence Bundle v1 artifacts against a prepared dataset."""
 
-    def __init__(self, prepared: str | Path, evidence: str | Path):
+    def __init__(self, prepared: str | Path, evidence: str | Path, validate_prepared: bool = True):
         self.prepared = Path(prepared)
         self.evidence = Path(evidence)
+        self.validate_prepared = validate_prepared
 
     def run(self) -> ValidationReport:
         """Validate evidence manifest, index, and bundles."""
         errors: list[str] = []
         warnings: list[str] = []
-        prepared_report = ValidatePreparedDataset(self.prepared).run()
-        if not prepared_report.ok:
-            errors.extend(f"Prepared dataset: {error}" for error in prepared_report.errors)
-            return ValidationReport("evidence", str(self.evidence), errors, warnings)
+        if self.validate_prepared:
+            prepared_report = ValidatePreparedDataset(self.prepared).run()
+            if not prepared_report.ok:
+                errors.extend(f"Prepared dataset: {error}" for error in prepared_report.errors)
+                return ValidationReport("evidence", str(self.evidence), errors, warnings)
 
         repository = LocalPreparedDatasetRepository(self.prepared)
         evidence_repository = LocalEvidenceRepository(self.evidence)
@@ -252,15 +257,17 @@ class ValidateEvidence:
 class BuildGroundTruthTagMap:
     """Build an event-id keyed GT tag map from prepared event metadata."""
 
-    def __init__(self, *, prepared: str | Path, out: str | Path):
+    def __init__(self, *, prepared: str | Path, out: str | Path, validate_prepared: bool = True):
         self.prepared = Path(prepared)
         self.out = Path(out)
+        self.validate_prepared = validate_prepared
 
     def run(self) -> GroundTruthTagMapResult:
         """Extract event tags and write a GT tag map."""
-        report = ValidatePreparedDataset(self.prepared).run()
-        if not report.ok:
-            raise EvidenceError(f"Prepared dataset validation failed: {report.errors}")
+        if self.validate_prepared:
+            report = ValidatePreparedDataset(self.prepared).run()
+            if not report.ok:
+                raise EvidenceError(f"Prepared dataset validation failed: {report.errors}")
         repository = LocalPreparedDatasetRepository(self.prepared)
         events = repository.read_events()
         entries = {

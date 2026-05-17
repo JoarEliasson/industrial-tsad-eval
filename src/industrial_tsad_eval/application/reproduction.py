@@ -644,6 +644,7 @@ class RunThesisReproduction:
                 native_missing_policy=str(
                     detector_config.parameters.get("evidence_native_missing_policy", "skip_bundle")
                 ),
+                validate_inputs=False,
             ).run()
             item_stages.append(
                 ReproductionStageResult(f"evidence:{item_id}", "completed", path=str(evidence_dir))
@@ -725,7 +726,7 @@ class RunThesisReproduction:
                 path=str(xai_dir),
             )
         )
-        BuildGroundTruthTagMap(prepared=prepared, out=gt_map).run()
+        BuildGroundTruthTagMap(prepared=prepared, out=gt_map, validate_prepared=False).run()
         xai_result = EvaluateEvidence(
             EvaluateEvidenceConfig(
                 prepared=prepared,
@@ -734,6 +735,7 @@ class RunThesisReproduction:
                 out=xai_dir,
                 ks=list(self.config.xai_ks),
                 protocol=experiment.protocol,
+                validate_inputs=False,
             )
         ).run()
         progress.emit(
